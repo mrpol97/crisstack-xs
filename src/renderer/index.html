@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' cine: data: blob:; media-src 'self' cine: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>CrisStack XS</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <div class="brand"><span class="logo"></span>CrisStack XS</div>
+    <select id="projectSel" aria-label="Proyecto" title="Proyecto activo"></select>
+    <div class="tools" role="toolbar" aria-label="Herramientas">
+      <button data-view="library" class="active" title="Volver a la biblioteca">Biblioteca</button>
+      <button data-view="offload" title="Offload y configuración de workflow">Offload</button>
+      <span class="sep"></span>
+      <button data-view="transcode">Transcodificar</button>
+      <button data-view="audio">Audio</button>
+      <button data-view="compare">Comparar</button>
+      <span class="sep"></span>
+      <button data-view="reports">Informes</button>
+      <button data-view="exchange">Intercambio</button>
+      <button data-view="archive">Archivo</button>
+      <button data-view="verify">Verificar</button>
+    </div>
+    <div class="grow"></div>
+    <button id="qcBtn" class="tb" title="Diseño QC: más espacio para el reproductor">QC</button>
+    <button data-view="settings" class="tb">Ajustes</button>
+  </header>
+  <div id="work"><div id="libHost"></div></div>
+  <footer id="jobsbar">
+    <span id="jobsText" class="mut">Sin trabajos activos</span>
+    <div class="bar" id="jobsProg" hidden><i></i></div>
+    <button data-view="jobs" class="tb">Trabajos <span id="jobsBadge" class="badge" hidden></span></button>
+  </footer>
+  <div id="sheet" hidden>
+    <div class="sheetbox" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      <div class="sheethead"><b id="sheetTitle"></b><button id="sheetClose" class="tb" aria-label="Cerrar">Cerrar ✕</button></div>
+      <div id="main"></div>
+    </div>
+  </div>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="player.js"></script>
+<script src="app.js"></script>
+<script src="app2.js"></script>
+</body>
+</html>

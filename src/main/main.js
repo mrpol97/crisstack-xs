@@ -1,0 +1,432 @@
+const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, safeStorage } = require('electron');
+const path = require('node:path');
+const fs = require('node:fs');
+const fsp = require('node:fs/promises');
+const { pathToFileURL } = require('node:url');
+
+const { runOffload, verifyFolder } = require('./engine/offload');
+const { writeMhl, parseMhl } = require('./engine/mhl');
+const { expand } = require('./engine/wildcards');
+const { Store } = require('./engine/store');
+const { Library } = require('./engine/library');
+const media = require('./engine/media');
+const report = require('./engine/report');
+const color = require('./engine/color');
+const audio = require('./engine/audio');
+const exportsM = require('./engine/exports');
+const importer = require('./engine/importer');
+const ascmhl = require('./engine/ascmhl');
+const s3 = require('./engine/s3');
+const tools = require('./engine/tools');
+
+let appState; // ajustes globales: proyecto actual, looks, workflows, Slack, S3
+const projectFile = (name) => (name === 'Default' ? path.join(app.getPath('userData'), 'library.json') : path.join(app.getPath('userData'), 'projects', `${name.replace(/[^\w .-]/g, '_')}.json`));
+function openProject(name) {
+  lib = new Library(new Store(projectFile(name)), path.join(app.getPath('userData'), 'thumbs'));
+  appState.set('project', name);
+}
+const encSecret = (s) => (safeStorage.isEncryptionAvailable() ? 'enc:' + safeStorage.encryptString(s).toString('base64') : 'raw:' + Buffer.from(s).toString('base64'));
+const decSecret = (s) => (!s ? '' : s.startsWith('enc:') ? safeStorage.decryptString(Buffer.from(s.slice(4), 'base64')) : Buffer.from(s.slice(4), 'base64').toString());
+function getS3() { const c = appState.get('s3'); return c ? { ...c, secretKey: decSecret(c.secretEnc) } : null; }
+async function uploadPaths(paths, prefix = '') {
+  const cfg = getS3(); if (!cfg) throw new Error('Configura S3 en Ajustes');
+  const out = [];
+  for (let i = 0; i < paths.length; i++) {
+    const key = [prefix.replace(/^\/|\/$/g, ''), path.basename(paths[i])].filter(Boolean).join('/');
+    send('upload:progress', { file: path.basename(paths[i]), i, n: paths.length, p: 0 });
+    out.push(await s3.uploadFile({ ...cfg, key, file: paths[i], onProgress: (p) => send('upload:progress', { file: path.basename(paths[i]), i, n: paths.length, p }) }));
+  }
+  return out;
+}
+
+protocol.registerSchemesAsPrivileged([{ scheme: 'cine', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, bypassCSP: true, corsEnabled: true } }]);
+
+let win, lib, settings;
+const running = new Map(); // jobId -> AbortController
+const send = (ch, payload) => win && !win.isDestroyed() && win.webContents.send(ch, payload);
+
+function createWindow() {
+  win = new BrowserWindow({
+    width: 1400, height: 880, minWidth: 1100, minHeight: 700, backgroundColor: '#0f1115',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    webPreferences: { preload: path.join(__dirname, '..', 'preload.js'), contextIsolation: true, nodeIntegration: false },
+  });
+  win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+}
+
+function listVolumes() {
+  const out = [];
+  if (process.platform === 'darwin') {
+    try { for (const n of fs.readdirSync('/Volumes')) out.push({ name: n, path: path.join('/Volumes', n) }); } catch { /* */ }
+  } else if (process.platform === 'win32') {
+    for (const l of 'DEFGHIJKLMNOPQRSTUVWXYZ') { const p = `${l}:\\`; if (fs.existsSync(p)) out.push({ name: p, path: p }); }
+  } else {
+    for (const base of ['/media', '/mnt', '/run/media']) try { for (const n of fs.readdirSync(base)) out.push({ name: n, path: path.join(base, n) }); } catch { /* */ }
+  }
+  return out;
+}
+
+async function renderPdf(html, outFile) {
+  const w = new BrowserWindow({ show: false, webPreferences: { offscreen: false } });
+  await w.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  const pdf = await w.webContents.printToPDF({ pageSize: 'A4', landscape: true, printBackground: true });
+  w.destroy();
+  await fsp.writeFile(outFile, pdf);
+  return outFile;
+}
+
+async function makeReport(type, { clipIds, jobIds, project, day, format = 'html', dark = false, outDir }) {
+  const clips = clipIds?.length ? clipIds.map((i) => lib.clips[i]).filter(Boolean) : Object.values(lib.clips);
+  const jobs = jobIds?.length ? lib.listJobs().filter((j) => jobIds.includes(j.id)) : lib.listJobs();
+  const html = report.build(type, { clips, jobs, project, day, dark });
+  const dir = outDir || path.join(app.getPath('documents'), 'Cinestack Reports');
+  await fsp.mkdir(dir, { recursive: true });
+  const base = path.join(dir, `${type}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}`);
+  if (format === 'pdf') return renderPdf(html, base + '.pdf');
+  await fsp.writeFile(base + '.html', html);
+  return base + '.html';
+}
+
+async function startWorkflow(cfg) {
+  // cfg: { sources[], destinations[], template, project, camera, day, algos[], verify, mhl, report:{type,format}|null, transcode:{preset,dir,height,lut,burnTimecode,burnName}|null }
+  const results = [];
+  for (let i = 0; i < cfg.sources.length; i++) {
+    const src = cfg.sources[i];
+    const reel = path.basename(src.replace(/[\\/]+$/, '')) || src;
+    const ctx = { project: cfg.project, day: cfg.day, camera: cfg.camera, reel, source: src, counter: i + 1 };
+    const folderName = expand(cfg.template || '{reel}', ctx);
+    const ac = new AbortController();
+    const key = `${Date.now()}-${i}`;
+    running.set(key, ac);
+    send('job:start', { key, source: src, reel, index: i, total: cfg.sources.length });
+    try {
+      const job = await runOffload({
+        sources: [src], destinations: cfg.destinations, folderName, algos: cfg.algos, verify: cfg.verify, signal: ac.signal,
+        rename: tools.makeRenamer(cfg.rename, { reel, camera: cfg.camera, project: cfg.project }),
+        onProgress: (p) => send('job:progress', { key, ...p }),
+      });
+      job.reel = reel; job.project = cfg.project; job.day = cfg.day; job.camera = cfg.camera;
+      const post = [];
+      if (cfg.mhl) for (const d of cfg.destinations) post.push(await writeMhl(job, d, `${folderName.replace(/[\\/]/g, '_')}_${job.id}`));
+      if (cfg.ascmhl && job.ok) for (const d of cfg.destinations) { const r = await ascmhl.seal(path.join(d, folderName), { algos: cfg.algos }); if (r.ok) post.push(r.file); }
+      if (appState.get('slack')) tools.notifySlack(appState.get('slack'), job).catch((e) => send('transcode:error', { error: 'Slack: ' + e.message }));
+      if (cfg.script && job.ok) { // paso post: script del usuario con variables de entorno
+        const { spawn } = require('node:child_process');
+        spawn(cfg.script, [], { shell: true, env: { ...process.env, CINESTACK_REEL: reel, CINESTACK_DEST: path.join(cfg.destinations[0], folderName), CINESTACK_OK: '1' }, stdio: 'ignore', detached: true }).unref();
+      }
+      const { clips } = await lib.registerJob(job, { project: cfg.project, reel, camera: cfg.camera, day: cfg.day }, (c) => send('library:clip', c));
+      lib.addJob(job);
+      if (cfg.report) post.push(await makeReport(cfg.report.type, { clipIds: clips.map((c) => c.id), jobIds: [job.id], project: cfg.project, day: cfg.day, format: cfg.report.format, outDir: path.join(cfg.destinations[0], folderName + '_report') }));
+      send('job:done', { key, ok: job.ok, failures: job.failures, post });
+      results.push({ job: { id: job.id, ok: job.ok, failures: job.failures, fileCount: job.fileCount }, post });
+      if (cfg.transcode && job.ok) {
+        // esperamos al ffprobe para conocer la duracion
+        await new Promise((r) => setTimeout(r, 300));
+        runTranscodes(clips.filter((c) => c.kind === 'video').map((c) => c.id), cfg.transcode).catch((e) => send('transcode:error', { error: e.message }));
+      }
+    } catch (e) {
+      send('job:done', { key, ok: false, error: e.message });
+      results.push({ error: e.message });
+      if (e.message === 'Cancelado') break;
+    } finally { running.delete(key); }
+  }
+  return results;
+}
+
+async function runTranscodes(ids, t) {
+  const preset = media.PRESETS[t.preset];
+  const outDir = t.dir || path.join(app.getPath('documents'), 'Cinestack Transcodes');
+  const outputs = [];
+  for (const id of ids) {
+    const c = lib.clips[id];
+    if (!c) continue;
+    if (!c.meta) { try { c.meta = await media.probe(c.path); } catch { continue; } }
+    const out = path.join(outDir, c.reel || 'clips', path.basename(c.name, path.extname(c.name)) + preset.ext);
+    const ac = new AbortController(); const key = `tc-${id}`; running.set(key, ac);
+    send('transcode:start', { id, name: c.name });
+    try {
+      const luts = t.applyLooks === false ? [] : await color.buildFfmpegLooks(c.look, path.join(app.getPath('temp'), 'cinestack-cubes'));
+      if (t.lut) luts.push(t.lut);
+      const tr = c.transform || {};
+      await media.transcode(c.path, out, { ...t, luts, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate, duration: c.meta.duration, fps: c.meta.fps, startTimecode: c.meta.timecode, signal: ac.signal, onProgress: (p) => send('transcode:progress', { id, p }) });
+      outputs.push(out);
+      send('transcode:done', { id, out });
+    } catch (e) { send('transcode:done', { id, error: e.message }); } finally { running.delete(key); }
+  }
+  if (t.s3 && outputs.length) { try { await uploadPaths(outputs, t.s3prefix || ''); send('transcode:done', { id: 'upload', out: `${outputs.length} ficheros subidos a S3` }); } catch (e) { send('transcode:error', { error: e.message }); } }
+  return outputs;
+}
+
+const proxyCache = new Map();
+async function playbackSource(id) {
+  const c = lib.clips[id];
+  if (!c) throw new Error('Clip no encontrado');
+  const direct = ['h264', 'vp9', 'vp8', 'av1'].includes(c.meta?.codec) && /\.(mp4|mov|m4v|webm)$/i.test(c.path);
+  if (direct) return { url: `cine://clip/${id}`, proxy: false };
+  const out = path.join(app.getPath('userData'), 'proxies', `${id}.mp4`);
+  if (!fs.existsSync(out)) {
+    if (!proxyCache.has(id)) proxyCache.set(id, media.transcode(c.path, out, { preset: 'h264_dailies', height: 540, duration: c.meta?.duration, onProgress: (p) => send('proxy:progress', { id, p }) }).finally(() => proxyCache.delete(id)));
+    await proxyCache.get(id);
+  }
+  return { url: `cine://proxy/${id}`, proxy: true };
+}
+
+function registerIpc() {
+  const h = (ch, fn) => ipcMain.handle(ch, async (_e, ...a) => fn(...a));
+  h('dialog:folder', async (multi) => {
+    const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', ...(multi ? ['multiSelections'] : []), 'createDirectory'] });
+    return r.canceled ? [] : r.filePaths;
+  });
+  h('dialog:file', async (filters) => {
+    const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters });
+    return r.canceled ? null : r.filePaths[0];
+  });
+  h('volumes:list', () => listVolumes());
+  h('wildcards:preview', (tpl, ctx) => expand(tpl, ctx));
+  h('workflow:start', (cfg) => startWorkflow(cfg));
+  h('job:cancel', () => { for (const ac of running.values()) ac.abort(); });
+  h('jobs:list', () => lib.listJobs());
+  h('library:bins', () => lib.listBins());
+  h('library:clips', (q) => lib.listClips(q));
+  h('library:update', (id, patch) => lib.updateClip(id, patch));
+  h('library:bulk', (ids, patch) => lib.bulkUpdate(ids, patch));
+  h('library:smart:list', () => lib.store.get('smartFolders'));
+  h('library:smart:add', (sf) => lib.addSmartFolder(sf));
+  h('library:smart:remove', (id) => lib.removeSmartFolder(id));
+  h('library:fields:list', () => lib.store.get('customFields'));
+  h('library:fields:add', (n) => lib.addCustomField(n));
+  h('presets:list', () => Object.entries(media.PRESETS).map(([id, p]) => ({ id, label: p.label })));
+  h('transcode:start', (ids, t) => runTranscodes(ids, t));
+  h('playback:source', (id) => playbackSource(id));
+  h('report:make', (type, opts) => makeReport(type, opts));
+  h('export:csv', async (ids) => {
+    const clips = ids?.length ? ids.map((i) => lib.clips[i]) : Object.values(lib.clips);
+    const r = await dialog.showSaveDialog(win, { defaultPath: 'clips.csv' });
+    if (r.canceled) return null; await fsp.writeFile(r.filePath, report.toCsv(clips)); return r.filePath;
+  });
+  h('export:edl', async (ids, fps) => {
+    const clips = (ids?.length ? ids.map((i) => lib.clips[i]) : Object.values(lib.clips));
+    const r = await dialog.showSaveDialog(win, { defaultPath: 'clips.edl' });
+    if (r.canceled) return null; await fsp.writeFile(r.filePath, report.toEdl(clips, 'CINESTACK', fps || 25)); return r.filePath;
+  });
+  h('verify:folder', async (root, mhlFile, algos) => {
+    const xml = await fsp.readFile(mhlFile, 'utf8');
+    let entries = parseMhl(xml);
+    // El MHL guarda "carpeta/rel"; si root es la propia carpeta, recortamos el primer segmento.
+    const first = entries[0]?.rel.split('/')[0];
+    if (first && path.basename(root) === first) entries = entries.map((e) => ({ ...e, rel: e.rel.split('/').slice(1).join('/') }));
+    const use = (algos?.length ? algos : Object.keys(entries[0]?.hashes || { xxh64: 1 })).filter((a) => entries.every((e) => e.hashes[a]));
+    return verifyFolder(root, entries, use, (p) => send('verify:progress', p));
+  });
+  h('shell:reveal', (p) => shell.showItemInFolder(p));
+  h('shell:open', (p) => shell.openPath(p));
+}
+
+function registerIpc2() {
+  const h = (ch, fn) => ipcMain.handle(ch, async (_e, ...a) => fn(...a));
+  const pick = (ids) => (ids?.length ? ids.map((i) => lib.clips[i]).filter(Boolean) : Object.values(lib.clips));
+  const saveText = async (name, text) => { const r = await dialog.showSaveDialog(win, { defaultPath: name }); if (r.canceled) return null; await fsp.writeFile(r.filePath, text); return r.filePath; };
+
+  // color y looks
+  h('looks:list', () => appState.get('looks'));
+  h('looks:save', (look) => { const l = { id: Date.now().toString(36), name: look.name, cdl: look.cdl, lut: look.lut || null }; appState.set('looks', [...appState.get('looks'), l]); return l; });
+  h('looks:remove', (id) => appState.set('looks', appState.get('looks').filter((l) => l.id !== id)));
+  h('look:set', (ids, look) => lib.bulkUpdate(ids, { look }));
+  h('transform:set', (ids, tr) => lib.bulkUpdate(ids, { transform: tr }));
+  h('lut:read', async (p) => { const c = color.parseCube(await fsp.readFile(p, 'utf8')); return { size: c.size, data: c.data }; });
+  h('looks:importCdl', async () => {
+    const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: 'ASC CDL', extensions: ['cdl', 'cc', 'ccc'] }] });
+    if (r.canceled) return { applied: 0, saved: 0 };
+    const items = color.parseCdlXml(await fsp.readFile(r.filePaths[0], 'utf8')); let applied = 0;
+    for (const it of items) {
+      const clip = Object.values(lib.clips).find((c) => c.name.replace(/\.[^.]+$/, '') === it.id);
+      if (clip) { lib.updateClip(clip.id, { look: { ...(clip.look || {}), cdl: it.cdl } }); applied++; }
+      else appState.set('looks', [...appState.get('looks'), { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: it.id, cdl: it.cdl, lut: null }]);
+    }
+    return { applied, saved: items.length - applied };
+  });
+  h('thumb:set', async (id, t) => { const c = lib.clips[id]; c.thumb = await media.thumbnail(c.path, path.join(app.getPath('userData'), 'thumbs', `${id}.jpg`), t); lib.store.save(); return c.thumb; });
+  h('still:export', async (id, t, preset) => {
+    const c = lib.clips[id]; const tr = c.transform || {};
+    const luts = await color.buildFfmpegLooks(c.look, path.join(app.getPath('temp'), 'cinestack-cubes'));
+    const dir = path.join(app.getPath('documents'), 'Cinestack Stills'); const ext = media.STILL_PRESETS[preset || 'jpeg'].ext;
+    return media.exportStill(c.path, path.join(dir, `${path.basename(c.name, path.extname(c.name))}_${Math.round(t * 1000)}${ext}`), { time: t, preset, luts, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate });
+  });
+  h('combine:run', async (ids, preset, height) => {
+    const files = pick(ids).filter((c) => c.kind === 'video').map((c) => c.path); if (files.length < 2) throw new Error('Selecciona al menos 2 clips');
+    return media.combineClips(files, path.join(app.getPath('documents'), 'Cinestack Transcodes', `combinado_${Date.now()}${media.PRESETS[preset].ext}`), { preset, height });
+  });
+
+  // audio
+  h('audio:scan', async (folder) => {
+    const out = []; for (const f of await require('./engine/offload').walk(folder)) if (media.kindOf(f.abs) === 'audio') { try { out.push(await audio.probeAudio(f.abs)); } catch { /* ilegible */ } }
+    return out;
+  });
+  h('audio:match', async (ids, audios, method) => {
+    const clips = pick(ids).filter((c) => c.kind === 'video' && c.meta); const res = [];
+    if (method !== 'waveform') res.push(...audio.matchByTimecode(clips, audios));
+    if (method !== 'timecode') for (const c of clips.filter((c) => !res.some((r) => r.clipId === c.id))) {
+      let best = null; for (const a of audios) { try { const m = await audio.matchByWaveform(c.path, a.file); if (!best || m.confidence > best.confidence) best = { ...m, clipId: c.id, audio: a.file }; } catch { /* sin audio */ } }
+      if (best && best.confidence > 0.25) res.push(best);
+    }
+    return res.map((r) => ({ ...r, clipName: lib.clips[r.clipId].name }));
+  });
+  h('audio:render', async (matches, outDir) => {
+    const done = [];
+    for (const m of matches) { const c = lib.clips[m.clipId]; const out = path.join(outDir || path.join(app.getPath('documents'), 'Cinestack Synced'), path.basename(c.name, path.extname(c.name)) + '_sync.mov'); done.push(await audio.renderSynced(c.path, m.audio, m.offset, out)); }
+    return done;
+  });
+
+  // intercambio
+  h('export:ale', (ids, fps) => saveText('clips.ale', exportsM.toAle(pick(ids), fps || 25)));
+  h('export:fcp7', (ids, fps) => saveText('clips.xml', exportsM.toFcp7Xml(pick(ids), 'Cinestack', fps || 25)));
+  h('export:fcpxml', (ids, fps) => saveText('clips.fcpxml', exportsM.toFcpxml(pick(ids), 'Cinestack', fps || 25)));
+  h('export:ccc', (ids) => saveText('looks.ccc', exportsM.toCcc(pick(ids))));
+  h('import:parse', async (file) => {
+    const text = await fsp.readFile(file, 'utf8'); const r = /\.ale$/i.test(file) ? importer.parseAle(text) : importer.parseCsv(text);
+    return { columns: r.columns, rows: r.rows, mapping: importer.suggestMapping(r.columns) };
+  });
+  h('import:apply', (rows, opts) => {
+    const { updates, unmatched } = importer.applyRows(Object.values(lib.clips), rows, opts);
+    for (const u of updates) lib.updateClip(u.id, u.patch);
+    return { updated: updates.length, unmatched };
+  });
+
+  // integridad / archivo
+  h('mhl:seal', (root, algos) => ascmhl.seal(root, { algos: algos?.length ? algos : ['xxh64'] }));
+  h('mhl:verify', (root) => ascmhl.verify(root));
+  h('relink:run', async (roots) => {
+    const r = await tools.relink(Object.values(lib.clips), roots);
+    for (const x of r.relinked) lib.clips[x.id].path = x.to; lib.store.save(); return r;
+  });
+  h('sequences:detect', async (folder) => { const files = await require('./engine/offload').walk(folder); return tools.detectSequences(files.map((f) => f.rel)); });
+  h('upload:clips', (ids, prefix) => uploadPaths(pick(ids).map((c) => c.path), prefix));
+  h('upload:paths', (paths, prefix) => uploadPaths(paths, prefix));
+
+  // ajustes, workflows, proyectos
+  h('settings:get', () => ({ slack: appState.get('slack'), s3: appState.get('s3') ? { ...appState.get('s3'), secretEnc: undefined, hasSecret: true } : null, encrypted: safeStorage.isEncryptionAvailable(), project: appState.get('project') }));
+  h('settings:set', ({ slack, s3: c }) => {
+    if (slack !== undefined) appState.set('slack', slack);
+    if (c) { const old = appState.get('s3') || {}; appState.set('s3', { endpoint: c.endpoint, region: c.region, bucket: c.bucket, accessKey: c.accessKey, secretEnc: c.secretKey ? encSecret(c.secretKey) : old.secretEnc }); }
+  });
+  h('slack:test', () => tools.postJson(appState.get('slack'), { text: 'Cinestack: aviso de prueba' }));
+  h('workflows:list', () => appState.get('workflows'));
+  h('workflows:save', (w) => { appState.set('workflows', [...appState.get('workflows').filter((x) => x.name !== w.name), w]); });
+  h('workflows:remove', (name) => appState.set('workflows', appState.get('workflows').filter((x) => x.name !== name)));
+  h('project:list', async () => ['Default', ...(await fsp.readdir(path.join(app.getPath('userData'), 'projects')).catch(() => [])).filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -5))]);
+  h('project:switch', async (name) => { await fsp.mkdir(path.join(app.getPath('userData'), 'projects'), { recursive: true }); openProject(name); });
+  h('archive:export', async () => {
+    const r = await dialog.showSaveDialog(win, { defaultPath: `cinestack-${appState.get('project')}.cinestack.json` }); if (r.canceled) return null;
+    await fsp.writeFile(r.filePath, JSON.stringify({ app: 'cinestack', version: 1, project: appState.get('project'), library: lib.store.data, looks: appState.get('looks'), workflows: appState.get('workflows') }, null, 2)); return r.filePath;
+  });
+  h('archive:import', async () => {
+    const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: 'Cinestack', extensions: ['json'] }] }); if (r.canceled) return null;
+    const a = JSON.parse(await fsp.readFile(r.filePaths[0], 'utf8')); if (a.app !== 'cinestack') throw new Error('No es un archivo de Cinestack');
+    const d = lib.store.data; Object.assign(d.bins, a.library.bins); Object.assign(d.clips, a.library.clips);
+    for (const s of a.library.smartFolders || []) if (!d.smartFolders.some((x) => x.id === s.id)) d.smartFolders.push(s);
+    d.customFields = [...new Set([...d.customFields, ...(a.library.customFields || [])])]; lib.store.save();
+    appState.set('looks', [...appState.get('looks'), ...(a.looks || []).filter((l) => !appState.get('looks').some((x) => x.id === l.id))]);
+    appState.set('workflows', [...appState.get('workflows'), ...(a.workflows || []).filter((w) => !appState.get('workflows').some((x) => x.name === w.name))]);
+    return { clips: Object.keys(a.library.clips).length };
+  });
+}
+
+app.whenReady().then(() => {
+  const ud = app.getPath('userData');
+  appState = new Store(path.join(ud, 'app-settings.json'), { project: 'Default', looks: [], workflows: [], slack: '', s3: null });
+  openProject(appState.get('project'));
+  settings = lib.store;
+
+  protocol.handle('cine', async (req) => {
+    const u = new URL(req.url);
+    const id = u.pathname.replace(/^\//, '');
+    let file;
+    if (u.host === 'thumb') file = path.join(ud, 'thumbs', id.replace(/[^\w.-]/g, '') + (id.endsWith('.jpg') ? '' : '.jpg'));
+    else if (u.host === 'clip') file = lib.clips[id]?.path;
+    else if (u.host === 'proxy') file = path.join(ud, 'proxies', id.replace(/[^\w.-]/g, '') + '.mp4');
+    if (!file) return new Response('not found', { status: 404 });
+    const r = await net.fetch(pathToFileURL(file).toString(), { headers: req.headers });
+    const headers = new Headers(r.headers); headers.set('Access-Control-Allow-Origin', '*'); // necesario para subir el video a una textura WebGL
+    return new Response(r.body, { status: r.status, statusText: r.statusText, headers });
+  });
+
+  registerIpc();
+  registerIpc2();
+  createWindow();
+  app.on('activate', () => BrowserWindow.getAllWindows().length === 0 && createWindow());
+});
+app.on('window-all-closed', () => process.platform !== 'darwin' && app.quit());
+
+/* ---- Autoprueba de extremo a extremo: CINESTACK_SELFTEST=<carpeta de salida> electron . ---- */
+async function selftest(outDir) {
+  const { spawnSync } = require('node:child_process');
+  const log = []; const step = (n, v) => { log.push([n, v]); console.log('[selftest]', n, JSON.stringify(v)); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const js = (code) => win.webContents.executeJavaScript(code).catch((e) => { throw new Error(`JS fallo: ${code.slice(0, 90)} -> ${e.message}`); });
+  const shot = async (name) => { const img = await win.webContents.capturePage(); await fsp.writeFile(path.join(outDir, name + '.png'), img.toPNG()); };
+  win.webContents.on('console-message', (_e, level, msg, line, src) => step('renderer-console', [level, msg, line, path.basename(src || '')]));
+  try {
+    win.webContents.reload(); await wait(1500);
+    step('api', await js(`typeof window.cinestack + ' ' + JSON.stringify(window.__errs)`));
+    const card = path.join(outDir, 'CARD_A001'); await fsp.mkdir(card, { recursive: true });
+    const gen = (f, extra) => spawnSync(media.FFMPEG, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=1280x720:rate=24:duration=3', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3', '-shortest', ...extra, path.join(card, f)]);
+    step('gen h264', gen('A001C001.mp4', ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac']).status);
+    step('gen prores', gen('A001C002.mov', ['-timecode', '10:00:00:00', '-c:v', 'prores_ks', '-profile:v', '3', '-c:a', 'pcm_s16le', '-ar', '48000']).status);
+    await wait(500);
+    const dests = [path.join(outDir, 'BACKUP1'), path.join(outDir, 'BACKUP2')];
+    const res = await startWorkflow({ sources: [card], destinations: dests, template: '{project}/Dia_{day}/{camera}_{reel}', project: 'Peli', camera: 'A', day: 1, algos: ['xxh64', 'md5'], verify: true, mhl: true, ascmhl: true, rename: '{reel}_{counter:2}', report: { type: 'shooting_day', format: 'pdf' }, transcode: { preset: 'h264_dailies', height: 360, burnTimecode: true, burnName: true, dir: path.join(outDir, 'TRANSCODES') } });
+    step('workflow', res.map((r) => r.job || r.error));
+    step('post files', res[0].post);
+    step('pdf size', (await fsp.stat(res[0].post.find((p) => p.endsWith('.pdf')))).size);
+    await wait(6000); // ffprobe + miniaturas + transcodes en segundo plano
+    const tc = await fsp.readdir(path.join(outDir, 'TRANSCODES', 'CARD_A001')).catch(() => []);
+    step('transcodes', tc);
+    // verifica la carpeta copiada contra el MHL escrito
+    const mhl = res[0].post.find((p) => p.endsWith('.mhl'));
+    const root = path.join(dests[1], 'Peli', 'Dia_01', 'A_CARD_A001');
+    // UI
+    await js(`document.querySelector('[data-view=jobs]').click()`); await wait(500); await shot('1-jobs');
+    await js(`document.querySelector('[data-view=library]').click()`); await wait(800); await shot('2-library');
+    await js(`document.querySelector('.clip').click()`); await wait(300);
+    await js(`document.querySelectorAll('.clip')[1].dispatchEvent(new MouseEvent('click',{ctrlKey:true,bubbles:true}))`); await wait(300);
+    step('selected', await js(`document.querySelectorAll('.clip.sel').length`));
+    await js(`document.querySelector('.clip').click()`); await wait(200);
+    await js(`document.querySelector('#inspector .btn').click()`); await wait(1500);
+    step('video ready', await js(`(()=>{const v=document.querySelector('#player video');return v?{rs:v.readyState,dur:v.duration,err:v.error&&v.error.code}:null})()`));
+    await shot('3-library-player');
+    // --- reproductor WebGL: medir pixeles reales con CDL y color falso ---
+    const avg = `(()=>{const p=state.player;const t=document.createElement('canvas');t.width=64;t.height=36;const c=t.getContext('2d');c.drawImage(p.canvas,0,0,64,36);const d=c.getImageData(0,0,64,36).data;let s=0;for(let i=0;i<d.length;i+=4)s+=d[i]+d[i+1]+d[i+2];return Math.round(s/(d.length/4*3));})()`;
+    step('gl ok', await js(`!!state.player && state.player.glOk && !state.player.glError`));
+    await js(`(()=>{state.player.video.pause();state.player.video.currentTime=1;})()`); await wait(700);
+    const base = await js(avg); step('gl base luma', base);
+    await js(`(()=>{state.player.setLook({cdl:{slope:[0.5,0.5,0.5],offset:[0,0,0],power:[1,1,1],sat:1}});})()`); await wait(300);
+    const dark = await js(avg); step('gl slope 0.5', dark);
+    await js(`(()=>{state.player.setLook({cdl:{slope:[1,1,1],offset:[0,0,0],power:[1,1,1],sat:0}});})()`); await wait(300);
+    step('gl sat 0', await js(`(()=>{const p=state.player;const t=document.createElement('canvas');t.width=64;t.height=36;const c=t.getContext('2d');c.drawImage(p.canvas,0,0,64,36);const d=c.getImageData(0,0,64,36).data;let m=0;for(let i=0;i<d.length;i+=4)m=Math.max(m,Math.abs(d[i]-d[i+1]),Math.abs(d[i+1]-d[i+2]));return m;})()`));
+    await js(`(()=>{state.player.setLook({cdl:{slope:[1,1,1],offset:[0,0,0],power:[1,1,1],sat:1}});state.player.fx.false=1;state.player.draw();})()`); await wait(300);
+    step('gl false color', await js(avg)); await js(`(()=>{state.player.fx.false=0;state.player.scopesOn=true;state.player.scopes.style.display='grid';state.player.draw();})()`); await wait(400);
+    step('scopes pintados', await js(`(()=>{const d=state.player.wf.getImageData(0,0,256,128).data;let n=0;for(let i=0;i<d.length;i+=4)if(d[i+1]>40)n++;return n;})()`));
+    await js(`(()=>{state.player.setFrameLines('2.39');})()`); await wait(300); await shot('3b-player-fx');
+    step('color panel', await js(`!!document.querySelector('#inspector details') && document.querySelectorAll('#inspector details input[type=range]').length`));
+    await js(`document.querySelector('#inspector details summary').click()`); await wait(400); await shot('3c-color-panel');
+    // --- vistas nuevas ---
+    for (const v of ['compare', 'audio', 'exchange', 'archive', 'settings', 'offload', 'verify']) {
+      await js(`document.querySelector('[data-view=${v}]').click()`); await wait(v === 'compare' ? 2500 : 900); await shot('v-' + v);
+      if (v === 'compare') step('compare diag', await js(`[...document.querySelectorAll('#main video')].map((v,i)=>{const c=[...document.querySelectorAll('#main canvas')].filter((k)=>k.width>512)[i];const t=document.createElement('canvas');t.width=32;t.height=18;const x=t.getContext('2d');x.drawImage(c,0,0,32,18);const d=x.getImageData(0,0,32,18).data;let s=0;for(let k=0;k<d.length;k+=4)s+=d[k]+d[k+1]+d[k+2];return {rs:v.readyState,err:v.error&&v.error.code,t:v.currentTime,w:c.width,h:c.height,luma:Math.round(s/(d.length/4*3))};})`));
+    }
+    step('ui errors', await js(`window.__errs||[]`));
+    step('clips con rename', Object.values(lib.clips).map((c) => c.name));
+    const hist = await ascmhl.verify(path.join(dests[0], 'Peli', 'Dia_01', 'A_CARD_A001'));
+    step('ascmhl verify', { ok: hist.ok, gen: hist.generation, n: hist.results.length });
+    step('mhl exists', !!mhl && fs.existsSync(mhl));
+    step('root exists', fs.existsSync(root));
+    await fsp.writeFile(path.join(outDir, 'selftest.json'), JSON.stringify(log, null, 2));
+    app.exit(0);
+  } catch (e) { console.error('[selftest] FALLO', e); await fsp.writeFile(path.join(outDir, 'selftest.json'), JSON.stringify([...log, ['ERROR', String(e.stack)]], null, 2)); app.exit(1); }
+}
+if (process.env.CINESTACK_SELFTEST) {
+  app.setPath('userData', path.join(process.env.CINESTACK_SELFTEST, 'userdata'));
+  app.whenReady().then(() => win.webContents.once('did-finish-load', () => setTimeout(() => selftest(process.env.CINESTACK_SELFTEST), 500)));
+}
+
+module.exports = { startWorkflow };
