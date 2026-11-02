@@ -51,4 +51,5 @@ jobs:
       - name: Publicar release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${{ github.ref_name }}" dist/*.dmg --repo "${{ github.repository }}" --title "CrisStack XS ${{ github.ref_name }}" --notes "Instalador para macOS. Apple Silicon: arm64. Intel: x64. Ver README para abrirlo la primera vez (app sin firmar)."
+        run: |
+          gh release create "${{ github.ref_name }}" dist/*.dmg             --repo "${{ github.repository }}"             --title "CrisStack XS ${{ github.ref_name }}"             --notes "Instalador para macOS (app sin firmar, ver README). arm64 = Apple Silicon, x64 = Intel."
