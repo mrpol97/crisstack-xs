@@ -1,6 +1,6 @@
 {
   "name": "cinestack",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "CrisStack XS: offload verificado, biblioteca de clips, color, audio, informes y exportaciones para DIT",
   "main": "src/main/main.js",
   "scripts": {

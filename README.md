@@ -46,6 +46,19 @@ La primera vez, macOS pedirá abrirla con clic derecho → Abrir (no está firma
 - **Transcodificar**: ProRes Proxy/422/HQ, DNxHR LB/SQ, H.264, H.265; escalado, LUT `.cube`,
   timecode y nombre quemados; puede lanzarse automáticamente tras el offload.
 
+## Novedades v0.6
+
+- **Carpetas y clips con reflejo en el disco**: renombrar carpetas (cambia también la carpeta del Finder/Explorador y las rutas de los clips),
+  crear subcarpetas, **mover clips arrastrándolos** a otra carpeta (mueve los ficheros, solo dentro del mismo disco), renombrar ficheros y
+  quitar clips o carpetas (opcionalmente a la Papelera, recuperable). Menú de clic derecho y botón ⋯ en cada carpeta.
+- **Edición en bloque**: selecciona varios clips (Mayús/Ctrl/Cmd+clic, Ctrl/Cmd+A) y cambia escena, plano, toma, cámara, reel, ShotID, marca,
+  valoración, notas y campos propios en todos a la vez.
+- **RAW y códecs sin decodificador** (BRAW, R3D, ARRIRAW, Sony X-OCN, ProRes RAW…): ya no dan error. Se registran con su información,
+  miniatura genérica con el nombre del formato y aviso claro; se les puede **vincular un proxy** (se detecta solo si está junto al original)
+  para reproducir, sacar miniaturas y transcodificar. Los decodificadores de esos formatos son SDK de cada fabricante y no se pueden incluir.
+- **Recorte**: botones «Restablecer recorte» y «Restablecer transformación», y deslizadores que se limitan entre sí.
+- Arreglo: miniaturas de clips de menos de un segundo.
+
 ## Novedades v0.5
 
 - **LUTs guardadas**: las LUT que importas se copian a la app y salen en una lista desplegable en el color de cada clip, en «LUT…» y en

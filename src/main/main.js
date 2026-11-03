@@ -18,6 +18,7 @@ const ascmhl = require('./engine/ascmhl');
 const s3 = require('./engine/s3');
 const tools = require('./engine/tools');
 const filters = require('./engine/filters');
+const libops = require('./engine/libops');
 const { LutLibrary } = require('./engine/lutlib');
 const crypto = require('node:crypto');
 
@@ -217,8 +218,9 @@ async function runTranscodes(ids, t) {
     if (!c) continue;
     const item = { id, name: c.name };
     if (c.kind !== 'video') { item.error = 'Solo se pueden transcodificar clips de vídeo'; results.push(item); send('transcode:done', item); continue; }
-    if (!clipFile(c)) { item.error = `No se encuentra el fichero original (${c.path}). Conecta el disco o usa Archivo → Relink.`; results.push(item); send('transcode:done', item); continue; }
-    if (!c.meta) { try { c.meta = await media.probe(clipFile(c)); } catch (e) { item.error = 'No se pudo leer el clip: ' + e.message; results.push(item); send('transcode:done', item); continue; } }
+    if (c.meta?.decodable === false && !mediaSource(c)) { item.error = NO_DEC(c); results.push(item); send('transcode:done', item); continue; }
+    if (!mediaSource(c)) { item.error = `No se encuentra el fichero original (${c.path}). Conecta el disco o usa Archivo → Relink.`; results.push(item); send('transcode:done', item); continue; }
+    if (!c.meta) { try { c.meta = await media.probe(mediaSource(c)); } catch (e) { item.error = 'No se pudo leer el clip: ' + e.message; results.push(item); send('transcode:done', item); continue; } }
     const out = path.join(outDir, c.reel || 'clips', path.basename(c.name, path.extname(c.name)) + preset.ext);
     const ac = new AbortController(); const key = `tc-${id}`; running.set(key, ac);
     send('transcode:start', { id, name: c.name });
@@ -226,7 +228,7 @@ async function runTranscodes(ids, t) {
       const lookLuts = t.applyLooks === false ? [] : await color.buildFfmpegLooks(c.look, path.join(app.getPath('temp'), 'cinestack-cubes'));
       if (t.lut) lookLuts.push(t.lut);
       const tr = c.transform || {};
-      await media.transcode(clipFile(c) || c.path, out, { ...t, luts: lookLuts, overlays: t.overlays ? filters.resolveOverlays(t.overlays, filters.clipContext(c, info)) : undefined, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate, duration: c.meta.duration, fps: c.meta.fps, startTimecode: c.meta.timecode, signal: ac.signal, onProgress: (p) => send('transcode:progress', { id, p }),
+      await media.transcode(mediaSource(c) || c.path, out, { ...t, luts: lookLuts, overlays: t.overlays ? filters.resolveOverlays(t.overlays, filters.clipContext(c, info)) : undefined, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate, duration: c.meta.duration, fps: c.meta.fps, startTimecode: c.meta.timecode, signal: ac.signal, onProgress: (p) => send('transcode:progress', { id, p }),
         metadata: t.metaFields?.length ? tools.buildClipMetadata(c, info, t.metaFields) : undefined, timecodeOut: t.keepTimecode !== false ? c.meta.timecode : undefined });
       const size = (await fsp.stat(out)).size;
       const reg = await lib.registerTranscode(c, out, preset.label, (cl) => send('library:clip', cl)); // aparece en la carpeta "Transcodes" con su informacion
@@ -250,14 +252,23 @@ function clipFile(c) {
   return (c.copies || []).map((x) => x.path).find((p) => p && fs.existsSync(p)) || null;
 }
 
+const NO_DEC = (c) => `«${c.name}» es ${c.meta?.codecLabel || 'un formato sin decodificador'}: la app no incluye el decodificador del fabricante (hace falta su SDK) y no puede reproducirlo ni transcodificarlo directamente. Vincula un proxy del clip (el que genera la cámara, o uno que saques con DaVinci Resolve o el software del fabricante) con «Vincular proxy…» y se usará para verlo, sacar miniaturas y transcodificar.`;
+function mediaSource(c) {
+  if (!c) return null;
+  if (c.meta?.decodable === false) return c.proxy && fs.existsSync(c.proxy) ? c.proxy : null;
+  return clipFile(c);
+}
+
 const proxyCache = new Map();
 async function playbackSource(id) {
   const c = lib.clips[id];
   if (!c) throw new Error('Clip no encontrado');
-  const src = clipFile(c);
+  const src = mediaSource(c);
+  if (!src && c.meta?.decodable === false) throw new Error(NO_DEC(c));
   if (!src) throw new Error(`No se encuentra el fichero de «${c.name}» (${c.path}). Puede que el disco esté desconectado o que lo hayas movido o borrado. Conecta el disco, usa Archivo → Relink, o quita el clip de la biblioteca.`);
-  const direct = ['h264', 'vp9', 'vp8', 'av1'].includes(c.meta?.codec) && /\.(mp4|mov|m4v|webm)$/i.test(src);
-  if (direct) return { url: `cine://clip/${id}`, proxy: false };
+  const codec = src === clipFile(c) ? c.meta?.codec : (await media.probe(src).catch(() => ({}))).codec;
+  const direct = ['h264', 'vp9', 'vp8', 'av1'].includes(codec) && /\.(mp4|mov|m4v|webm)$/i.test(src);
+  if (direct) return { url: `cine://media/${id}`, proxy: false };
   const out = path.join(app.getPath('userData'), 'proxies', `${id}.mp4`);
   if (!fs.existsSync(out)) {
     if (!proxyCache.has(id)) proxyCache.set(id, media.transcode(src, out, { preset: 'h264_dailies', height: 540, duration: c.meta?.duration, onProgress: (p) => send('proxy:progress', { id, p }) }).finally(() => proxyCache.delete(id)));
@@ -341,7 +352,7 @@ function registerIpc2() {
   // previsualizacion del transcode: un fotograma con los mismos filtros que se aplicaran
   h('transcode:preview', async (id, t, time) => {
     const c = lib.clips[id]; if (!c || c.kind !== 'video') throw new Error('Elige un clip de vídeo para previsualizar');
-    const src = clipFile(c); if (!src) throw new Error(`No se encuentra el fichero original (${c.path}). Conecta el disco o usa Archivo → Relink.`);
+    const src = mediaSource(c); if (!src) throw new Error(c.meta?.decodable === false ? NO_DEC(c) : `No se encuentra el fichero original (${c.path}). Conecta el disco o usa Archivo → Relink.`);
     const meta = c.meta || await media.probe(src);
     const luts = t.applyLooks === false ? [] : await color.buildFfmpegLooks(c.look, path.join(app.getPath('temp'), 'cinestack-cubes'));
     if (t.lut) luts.push(t.lut);
@@ -400,6 +411,20 @@ function registerIpc2() {
   h('luts:remove', (id) => luts.remove(id));
   h('luts:rename', (id, name) => luts.rename(id, name));
   h('library:checkMissing', () => Object.values(lib.clips).filter((c) => c.path && !clipFile(c)).map((c) => ({ id: c.id, name: c.name, path: c.path })));
+  // proxy vinculado a un RAW sin decodificador
+  h('clip:linkProxy', async (id, file) => {
+    if (file === undefined) { const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: 'Vídeo proxy', extensions: ['mp4', 'mov', 'm4v', 'mxf', 'mkv'] }] }); if (r.canceled) return null; file = r.filePaths[0]; }
+    return lib.linkProxy(id, file || null);
+  });
+  // carpetas y clips: renombrar, crear, mover y eliminar, con opcion de reflejarlo en el disco (Finder / Explorador)
+  const trashFn = (p) => shell.trashItem(p);
+  h('bin:info', (id) => { const d = libops.binDir(lib, id); return { dir: d }; });
+  h('bin:rename', (id, name, disk) => libops.renameBin(lib, id, name, { disk: !!disk }));
+  h('bin:create', async (parent, name, disk) => { const b = await libops.createBin(lib, parent || null, name, { disk: !!disk }); return { id: b.id, name: b.name, dir: b.dir || null }; });
+  h('bin:remove', (id, trash) => libops.removeBin(lib, id, { trash: !!trash, trashFn }));
+  h('clips:move', (ids, bin, disk) => libops.moveClips(lib, ids, bin, { disk: !!disk }));
+  h('clip:rename', async (id, name, disk) => { const c = await libops.renameClip(lib, id, name, { disk: !!disk }); return { id: c.id, name: c.name, path: c.path }; });
+  h('clips:remove', (ids, trash) => libops.removeClips(lib, ids, { trash: !!trash, trashFn }));
   h('library:remove', (ids) => { let n = 0; for (const id of ids || []) if (lib.clips[id]) { delete lib.clips[id]; n++; } lib.store.save(); return n; });
 
   // stills por escena: se guardan con el look del clip y quedan agrupados por escena
@@ -409,7 +434,7 @@ function registerIpc2() {
   h('stills:list', () => lib.listStills());
   h('stills:capture', async ({ clipId, t, format = 'jpeg', note = '', scene }) => {
     const c = lib.clips[clipId]; if (!c || c.kind !== 'video') throw new Error('Elige un clip de vídeo');
-    const src = clipFile(c); if (!src) throw new Error(`No se encuentra el fichero de «${c.name}»`);
+    const src = mediaSource(c); if (!src) throw new Error(c.meta?.decodable === false ? NO_DEC(c) : `No se encuentra el fichero de «${c.name}»`);
     const preset = media.STILL_PRESETS[format] ? format : 'jpeg';
     const fps = c.meta?.fps || 25; const at = Math.max(0, Number(t) || 0);
     const info = lib.getProject();
@@ -435,7 +460,7 @@ function registerIpc2() {
   });
   h('stills:strip', async (clipId, count = 12) => {
     const c = lib.clips[clipId]; if (!c || c.kind !== 'video') throw new Error('Elige un clip de vídeo');
-    const src = clipFile(c); if (!src) throw new Error('No se encuentra el fichero del clip');
+    const src = mediaSource(c); if (!src) throw new Error(c.meta?.decodable === false ? NO_DEC(c) : 'No se encuentra el fichero del clip');
     const look = await color.buildFfmpegLooks(c.look, cubesDir()); const tr = c.transform || {};
     try { return await media.filmstrip(src, { count, duration: c.meta?.duration || 1, luts: look, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate }); } finally { await dropCubes(look); }
   });
@@ -463,14 +488,14 @@ function registerIpc2() {
     return { applied, saved: items.length - applied };
   });
   h('thumb:set', async (id, t) => { // elige el momento que se ve como miniatura del clip
-    const c = lib.clips[id]; const src = clipFile(c); if (!src) throw new Error('No se encuentra el fichero del clip');
-    c.thumb = await media.thumbnail(src, path.join(app.getPath('userData'), 'thumbs', `${id}.jpg`), t); c.thumbAt = Number(t) || 0; lib.store.save(); return c.thumb;
+    const c = lib.clips[id]; const src = mediaSource(c); if (!src) throw new Error(c.meta?.decodable === false ? NO_DEC(c) : 'No se encuentra el fichero del clip');
+    c.thumb = await media.thumbnail(src, path.join(app.getPath('userData'), 'thumbs', `${id}.jpg`), t); c.thumbAt = Number(t) || 0; c.thumbRev = (c.thumbRev || 0) + 1; lib.store.save(); return c.thumb;
   });
   h('still:export', async (id, t, preset) => {
     const c = lib.clips[id]; const tr = c.transform || {};
     const luts = await color.buildFfmpegLooks(c.look, path.join(app.getPath('temp'), 'cinestack-cubes'));
     const dir = path.join(app.getPath('documents'), 'Cinestack Stills'); const ext = media.STILL_PRESETS[preset || 'jpeg'].ext;
-    return media.exportStill(clipFile(c) || c.path, path.join(dir, `${path.basename(c.name, path.extname(c.name))}_${Math.round(t * 1000)}${ext}`), { time: t, preset, luts, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate });
+    return media.exportStill(mediaSource(c) || c.path, path.join(dir, `${path.basename(c.name, path.extname(c.name))}_${Math.round(t * 1000)}${ext}`), { time: t, preset, luts, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate });
   });
   h('combine:run', async (ids, preset, height) => {
     const files = pick(ids).filter((c) => c.kind === 'video').map((c) => c.path); if (files.length < 2) throw new Error('Selecciona al menos 2 clips');
@@ -623,7 +648,7 @@ app.whenReady().then(() => {
       file = u.searchParams.get('look') === '1' && lib.clips[cid] ? await lookedThumb(lib.clips[cid], base) : base;
     } else if (u.host === 'still') file = path.join(stillThumbs(ud), id.replace(/[^\w.-]/g, '').replace(/\.jpg$/, '') + '.jpg');
     else if (u.host === 'stillfull') file = lib.listStills().find((s) => s.id === id)?.file;
-    else if (u.host === 'clip') file = clipFile(lib.clips[id]);
+    else if (u.host === 'clip' || u.host === 'media') file = mediaSource(lib.clips[id]);
     else if (u.host === 'proxy') file = path.join(ud, 'proxies', id.replace(/[^\w.-]/g, '') + '.mp4');
     if (!file || !fs.existsSync(file)) return new Response('not found', { status: 404 });
     const r = await net.fetch(pathToFileURL(file).toString(), { headers: req.headers });
@@ -902,6 +927,67 @@ async function selftest(outDir) {
     const pdf = await js(`api.invoke('stills:report', { scene: '12', format: 'pdf' })`); step('v05 informe de stills', { pdf: path.basename(pdf), kb: Math.round(fs.statSync(pdf).size / 1024) });
     // 8) el atajo del reproductor de la biblioteca guarda en la escena
     await js(`go('library')`); await wait(900);
+
+    // ===================== v0.6 =====================
+    await js(`state.lib.bin=null; state.lib.mode='grid'; state.playerClipId=null; go('library')`); await wait(1000);
+    // 1) recorte: sliders coherentes y boton de restablecer
+    await js(`(()=>{const c=state.lib.clips.find((x)=>x.name==='A001.mp4'); state.lib.sel=new Set([c.id]); drawClips($('#clipGrid')); drawInspector();})()`); await wait(700);
+    await js(`document.querySelector('#inspector details summary')?.click()`); await wait(300);
+    const setRange = (label, v) => js(`(()=>{const l=[...document.querySelectorAll('#inspector label.f')].find((x)=>x.firstChild.textContent==='${label}');const i=l.querySelector('input');i.value=${v};i.dispatchEvent(new Event('input',{bubbles:true}));return [i.min,i.max,i.value]})()`);
+    step('v06 recorte ancho', await setRange('Ancho', 0.4)); step('v06 recorte X (max limitado por el ancho)', await setRange('Recorte X', 0.9)); await wait(1200);
+    step('v06 recorte guardado', lib.clips[a001.id].transform?.crop);
+    await js(`[...document.querySelectorAll('#inspector button')].find((b)=>b.textContent==='Restablecer recorte').click()`); await wait(1200);
+    step('v06 recorte restablecido', { crop: lib.clips[a001.id].transform?.crop ?? null, sliders: await js(`[...document.querySelectorAll('#inspector label.f input[type=range]')].slice(-4).map((i)=>[i.min,i.max,i.value].join('/'))`) });
+
+    // 2) RAW sin decodificador: .braw con proxy al lado y otro sin proxy
+    const rawDir = path.join(outDir, 'RAW_A001.RDC'); fs.mkdirSync(path.join(rawDir, 'Sub'), { recursive: true });
+    fs.writeFileSync(path.join(rawDir, 'A001_C010.braw'), Buffer.alloc(8192, 3)); fs.writeFileSync(path.join(rawDir, 'A001_C011.braw'), Buffer.alloc(8192, 5));
+    spawnSync(media.FFMPEG, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=24:duration=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', path.join(rawDir, 'Sub', 'A001_C010_proxy.mp4')]);
+    await lib.importFolder(rawDir, {}, (c) => send('library:clip', c)); await wait(4500);
+    const rawA = Object.values(lib.clips).find((c) => c.name === 'A001_C010.braw'), rawB = Object.values(lib.clips).find((c) => c.name === 'A001_C011.braw');
+    step('v06 RAW registrados', { conProxy: [rawA.meta?.codec, rawA.meta?.decodable, !!rawA.proxy, !!rawA.thumb, rawA.meta?.width], sinProxy: [rawB.meta?.codec, rawB.meta?.decodable, !!rawB.proxy, !!rawB.thumb] });
+    step('v06 reproducir RAW con proxy', await js(`api.invoke('playback:source', ${JSON.stringify(rawA.id)}).then((s)=>s.url.split('/').slice(0,3).join('/'), (e)=>e.message)`));
+    step('v06 reproducir RAW sin proxy', (await js(`api.invoke('playback:source', ${JSON.stringify(rawB.id)}).then(()=>'SIN ERROR', (e)=>e.message)`)).slice(0, 160));
+    await js(`state.lib.bin=null; state.lib.mode='grid'; render()`); await wait(1200);
+    await js(`(()=>{const c=state.lib.clips.find((x)=>x.name==='A001_C011.braw'); state.lib.sel=new Set([c.id]); drawClips($('#clipGrid')); drawInspector(); return play(c);})()`); await wait(900);
+    step('v06 mensaje y boton de proxy', await js(`({ texto: document.querySelector('#player')?.innerText.slice(0,80), boton: [...document.querySelectorAll('#player button')].map((b)=>b.textContent) })`));
+    await shot('r1-raw-sin-decodificador');
+    const lk = await js(`api.invoke('clip:linkProxy', ${JSON.stringify(rawB.id)}, ${JSON.stringify(path.join(rawDir, 'Sub', 'A001_C010_proxy.mp4'))}).then((c)=>[!!c.proxy,c.meta.width])`);
+    step('v06 proxy vinculado a mano', lk);
+    const tr6 = await runTranscodes([rawA.id], { preset: 'h264_dailies', height: 180, dir: path.join(outDir, 'TC_RAW') });
+    step('v06 transcode de RAW via proxy', tr6.map((f) => [path.basename(f), fs.statSync(f).size]));
+
+    // 3) carpetas y clips en disco: menu, renombrar, nueva subcarpeta, arrastrar y soltar, edicion en bloque, quitar
+    const fo = path.join(outDir, 'ESTRUCTURA', 'Rodaje'); for (const [d, n] of [['Dia1/CamA', 'X001.mp4'], ['Dia1/CamA', 'X002.mp4'], ['Dia1/CamB', 'Y001.mp4']]) { fs.mkdirSync(path.join(fo, d), { recursive: true }); spawnSync(media.FFMPEG, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=24:duration=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', path.join(fo, d, n)]); }
+    await lib.importFolder(fo, {}, (c) => send('library:clip', c)); await wait(3500);
+    await js(`state.lib.bin=null; state.lib.mode='list'; render()`); await wait(1200);
+    const binOf = (n) => Object.values(lib.bins).find((b) => b.name === n && lib.bins[b.parent]?.name !== 'x');
+    await js(`(()=>{const r=[...document.querySelectorAll('.tree .trow')].find((b)=>b.querySelector('.tname')?.textContent==='Dia1'); r.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:200,clientY:300}));})()`); await wait(400);
+    step('v06 menu de carpeta', await js(`[...document.querySelectorAll('.ctxmenu button')].map((b)=>b.textContent)`)); await shot('r2-menu-carpeta');
+    await js(`[...document.querySelectorAll('.ctxmenu button')].find((b)=>b.textContent.startsWith('Renombrar')).click()`); await wait(600);
+    await js(`(()=>{const d=document.querySelector('dialog[open]');const i=d.querySelector('input[type=text]');i.value='Jornada_1';[...d.querySelectorAll('button')].find((b)=>b.textContent==='Renombrar').click();})()`); await wait(1500);
+    step('v06 carpeta renombrada en disco', { dia1: fs.existsSync(path.join(fo, 'Dia1')), dia_01: fs.existsSync(path.join(fo, 'Jornada_1', 'CamA', 'X001.mp4')), clip: Object.values(lib.clips).find((c) => c.name === 'X001.mp4').path.replace(outDir, '') });
+    await js(`(()=>{const r=[...document.querySelectorAll('.tree .trow')].find((b)=>b.querySelector('.tname')?.textContent==='Jornada_1');r.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:200,clientY:300}));})()`); await wait(300);
+    await js(`[...document.querySelectorAll('.ctxmenu button')].find((b)=>b.textContent.startsWith('Nueva subcarpeta')).click()`); await wait(600);
+    await js(`(()=>{const d=document.querySelector('dialog[open]');d.querySelector('input[type=text]').value='Descartes';[...d.querySelectorAll('button')].find((b)=>b.textContent==='Crear').click();})()`); await wait(1500);
+    step('v06 subcarpeta creada', [fs.existsSync(path.join(fo, 'Jornada_1', 'Descartes')), await js(`document.querySelector('dialog[open] .bad')?.innerText || null`)]);
+    // arrastrar dos clips de la lista a la carpeta Descartes
+    await js(`state.lib.bin=null; render()`); await wait(1200);
+    await js(`(()=>{const dt=new DataTransfer();state.lib.sel=new Set(state.lib.clips.filter((c)=>/^(X002|Y001)/.test(c.name)).map((c)=>c.id));const idx=state.lib.clips.findIndex((x)=>x.name==='X002.mp4');const rows=document.querySelectorAll('#clipGrid tbody tr');rows[idx].dispatchEvent(new DragEvent('dragstart',{bubbles:true,dataTransfer:dt}));const t=[...document.querySelectorAll('.tree .trow')].find((b)=>b.querySelector('.tname')?.textContent==='Descartes');t.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:dt}));t.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:dt}));})()`); await wait(900);
+    step('v06 dialogo de mover', await js(`document.querySelector('dialog[open]')?.innerText.split(String.fromCharCode(10)).slice(0,5).join(' | ')`)); await shot('r3-mover-clips');
+    await js(`[...document.querySelector('dialog[open]').querySelectorAll('button')].find((b)=>b.textContent==='Mover').click()`); await wait(1800);
+    step('v06 clips movidos en disco', { descartes: fs.readdirSync(path.join(fo, 'Jornada_1', 'Descartes')), camA: fs.readdirSync(path.join(fo, 'Jornada_1', 'CamA')) });
+    // edicion en bloque de los clips seleccionados
+    await js(`state.lib.bin=null; render()`); await wait(1000);
+    await js(`(()=>{state.lib.sel=new Set(state.lib.clips.filter((c)=>/^(X001|X002|Y001)/.test(c.name)).map((c)=>c.id));drawClips($('#clipGrid'));drawInspector();bulkEditUI([...state.lib.sel]);})()`); await wait(700);
+    await js(`(()=>{const d=document.querySelector('dialog[open]');const ins=d.querySelectorAll('input[type=text]');const set=(i,v)=>{ins[i].value=v;ins[i].dispatchEvent(new Event('input',{bubbles:true}));};set(0,'12');set(1,'C');set(3,'A-CAM');set(4,'R07');})()`); await shot('r4-edicion-en-bloque');
+    await js(`[...document.querySelector('dialog[open]').querySelectorAll('button')].find((b)=>b.textContent==='Aplicar a todos').click()`); await wait(1200);
+    step('v06 edicion en bloque', ['X001.mp4', 'X002.mp4', 'Y001.mp4'].map((n) => { const c = Object.values(lib.clips).find((x) => x.name === n); return [n, c.scene, c.shot, c.take, c.camera, c.reel].join('/'); }));
+    // renombrar un fichero y quitarlo a la papelera de pruebas no se prueba aqui (shell.trashItem tocaria la papelera real): se cubre en los tests del motor
+    const rn6 = await js(`api.invoke('clip:rename', ${JSON.stringify(Object.values(lib.clips).find((c) => c.name === 'Y001.mp4').id)}, 'PLANO_B', true)`);
+    step('v06 clip renombrado', { nombre: rn6.name, enDisco: fs.existsSync(rn6.path) });
+    await js(`state.lib.sel=new Set(); state.lib.mode='grid'; render()`); await wait(1200);
+    await shot('r5-biblioteca-v06');
 
     await js(`go('library')`); await wait(900);
     step('mhl exists', !!mhl && fs.existsSync(mhl));

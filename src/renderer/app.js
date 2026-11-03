@@ -140,7 +140,7 @@ async function viewLibrary() { return libraryScreen(); }
 function drawGrid(grid) {
   const L = state.lib;
   if (!L.clips.length) return grid.replaceChildren(h('div', { class: 'empty', style: 'grid-column:1/-1' }, 'No hay clips. Haz un offload o cambia el filtro.'));
-  grid.replaceChildren(...L.clips.map((c, idx) => h('div', { class: 'clip' + (L.sel.has(c.id) ? ' sel' : ''), tabindex: 0, onclick: (e) => selectClip(c, idx, e), ondblclick: () => play(c) },
+  grid.replaceChildren(...L.clips.map((c, idx) => h('div', { class: 'clip' + (L.sel.has(c.id) ? ' sel' : ''), tabindex: 0, draggable: 'true', ondragstart: (e) => clipDrag(e, c), ondragend: () => { L.dragIds = null; }, oncontextmenu: (e) => clipCtx(e, c), onclick: (e) => selectClip(c, idx, e), ondblclick: () => play(c) },
     h('div', { class: 'th' }, c.thumb ? h('img', { src: thumbSrc(c), alt: '', loading: 'lazy' }) : (c.kind === 'video' ? 'Analizando…' : c.kind)),
     h('div', { class: 'meta' }, h('b', { title: c.name }, c.name),
       h('span', { class: 'mut' }, [c.meta?.width ? `${c.meta.width}×${c.meta.height}` : '', c.meta?.fps ? `${+c.meta.fps.toFixed(2)}p` : '', fmtDur(c.meta?.duration)].filter(Boolean).join(' · ') || fmtBytes(c.size)),
@@ -168,8 +168,9 @@ async function play(c) {
     p.onThumb = async (t) => { try { await api.invoke('thumb:set', c.id, t); toast('Miniatura actualizada'); refreshClips(); } catch (e) { toast('Error: ' + errText(e)); } };
     p.video.play().catch(() => {});
   } catch (err) {
+    const noDec = /Vincula un proxy/.test(errText(err));
     box.replaceChildren(h('div', { class: 'bad' }, errText(err)), h('div', { class: 'row', style: 'margin-top:8px' },
-      h('button', { class: 'btn', onclick: () => go('archive') }, 'Ir a Relink'),
+      noDec ? h('button', { class: 'btn primary', onclick: () => linkProxyUI(c) }, 'Vincular proxy…') : h('button', { class: 'btn', onclick: () => go('archive') }, 'Ir a Relink'),
       h('button', { class: 'btn danger', onclick: async () => { if (!confirm(`¿Quitar «${c.name}» de la biblioteca? El fichero no se borra.`)) return; await api.invoke('library:remove', [c.id]); state.lib.sel.delete(c.id); state.playerClipId = null; toast('Clip quitado de la biblioteca'); render(); } }, 'Quitar de la biblioteca')));
   }
 }
@@ -184,7 +185,7 @@ function drawInspector() {
   const reuse = one && state.playerClipId === one.id && state.playerHost;
   const playerBox = h('div', { id: 'player' }, reuse ? state.playerHost : one?.kind === 'video' ? h('button', { class: 'btn', onclick: () => play(one) }, 'Reproducir') : '');
   const kids = [placePanel('player', 'Reproductor', playerBox)];
-  kids.push(h('h2', {}, one ? one.name : `${sel.length} clips`));
+  kids.push(h('h2', {}, one ? one.name : `${sel.length} clips seleccionados`), selectionActions(sel));
   kids.push(h('div', { class: 'row' }, ...[['good', '✔ Bueno'], ['bad', '✖ Malo'], ['hold', '● Pend.'], ['circled', '◯ Circled'], ['', 'Quitar']].map(([f, l]) => h('button', { class: 'btn', onclick: () => patch({ flag: f }) }, l))));
   kids.push(h('div', { class: 'stars', style: 'margin:6px 0' }, ...[1, 2, 3, 4, 5].map((n) => h('button', { class: one && one.rating >= n ? 'on' : '', 'aria-label': n + ' estrellas', onclick: () => patch({ rating: one && one.rating === n ? 0 : n }) }, '★'))));
   kids.push(h('div', { class: 'colors' }, ...COLORS.map((c) => h('button', { 'aria-label': 'Color ' + (c || 'ninguno'), style: `background:${c || 'transparent'};border-color:${one && one.color === c ? '#fff' : c ? 'transparent' : '#444'}`, onclick: () => patch({ color: c }) }))));
@@ -196,9 +197,11 @@ function drawInspector() {
   kids.push(h('button', { class: 'btn', style: 'margin-top:8px', onclick: async () => { const r = await askForm('Campo personalizado', [{ key: 'n', label: 'Nombre del campo' }]); if (r?.n) { await api.invoke('library:fields:add', r.n); render(); } } }, '+ Campo personalizado'));
   if (one) {
     const m = one.meta || {};
-    const rows = [['Codec', [m.codec, m.profile].filter(Boolean).join(' ')], ['Resolución', m.width ? `${m.width}×${m.height}` : ''], ['FPS', m.fps ? +m.fps.toFixed(3) : ''], ['Timecode', m.timecode], ['Duración', fmtDur(m.duration)], ['Audio', m.audioTracks ? `${m.audioTracks} pistas / ${m.audioChannels} canales` : ''], ['Tamaño', fmtBytes(one.size)], ['Estado', one.verified], ...Object.entries(one.hashes || {}).map(([a, v]) => [a.toUpperCase(), v]), ['Ruta', one.path]];
+    const rows = [['Codec', [m.codec, m.profile].filter(Boolean).join(' ')], ['Decodificador', m.decodable === false ? 'No incluido: formato del fabricante (RAW)' : ''], ['Proxy vinculado', one.proxy], ['Resolución', m.width ? `${m.width}×${m.height}` : ''], ['FPS', m.fps ? +m.fps.toFixed(3) : ''], ['Timecode', m.timecode], ['Duración', fmtDur(m.duration)], ['Audio', m.audioTracks ? `${m.audioTracks} pistas / ${m.audioChannels} canales` : ''], ['Tamaño', fmtBytes(one.size)], ['Estado', one.verified], ...Object.entries(one.hashes || {}).map(([a, v]) => [a.toUpperCase(), v]), ['Ruta', one.path]];
     kids.push(h('h2', {}, 'Información'), h('table', {}, ...rows.filter((r) => r[1] !== '' && r[1] != null).map(([k, v]) => h('tr', {}, h('td', { class: 'mut', style: 'width:84px' }, k), h('td', { class: 'mono', style: 'word-break:break-all' }, String(v))))));
-    kids.push(h('button', { class: 'btn', style: 'margin-top:8px', onclick: () => api.invoke('shell:reveal', one.path) }, 'Mostrar en carpeta'));
+    kids.push(h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'btn', onclick: () => api.invoke('shell:reveal', one.path) }, 'Mostrar en carpeta'),
+      m.decodable === false || one.proxy ? h('button', { class: 'btn' + (m.decodable === false && !one.proxy ? ' primary' : ''), title: 'Vincula un vídeo proxy (H.264/ProRes) de este clip para verlo, sacar miniaturas y transcodificar', onclick: () => linkProxyUI(one) }, one.proxy ? 'Cambiar proxy…' : 'Vincular proxy…') : '',
+      one.proxy ? h('button', { class: 'btn', onclick: async () => { await api.invoke('clip:linkProxy', one.id, null); state.playerClipId = null; render(); } }, 'Quitar proxy') : ''));
   }
   box.replaceChildren(...kids);
 }

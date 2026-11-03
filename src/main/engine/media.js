@@ -37,8 +37,38 @@ function parseRate(r) {
   return b ? a / b : a || null;
 }
 
+/* ---------- formatos RAW de camara y otros codecs que ffmpeg no puede decodificar ---------- */
+// Estos formatos necesitan el SDK del fabricante (Blackmagic, RED, ARRI, Sony...): la app los registra como clips con su informacion
+// y miniatura generica, y permite vincularles un proxy para verlos y transcodificarlos.
+const RAW_BY_EXT = { '.braw': 'Blackmagic RAW', '.r3d': 'REDCODE RAW (R3D)', '.ari': 'ARRIRAW', '.arx': 'ARRIRAW', '.crm': 'Canon Cinema RAW Light', '.nev': 'Nikon N-RAW', '.rmf': 'Canon RAW (RMF)' };
+const RAW_BY_TAG = { braw: 'Blackmagic RAW', aprn: 'Apple ProRes RAW', aprh: 'Apple ProRes RAW HQ', xocn: 'Sony X-OCN', r3d: 'REDCODE RAW (R3D)' };
+let decoderSet = null;
+function decoders() {
+  if (!decoderSet) {
+    decoderSet = new Set();
+    try { for (const l of String(require('node:child_process').spawnSync(FFMPEG, ['-hide_banner', '-decoders'], { windowsHide: true }).stdout).split('\n')) { const m = /^ ([VAS][A-Z.]{5}) (\S+)/.exec(l); if (m) decoderSet.add(m[2]); } } catch { /* sin lista */ }
+  }
+  return decoderSet;
+}
+/** { decodable, label } para el primer stream de video. */
+function decodability(file, v) {
+  const ext = path.extname(file).toLowerCase(); const name = v?.codec_name;
+  const tag = String(v?.codec_tag_string || '').toLowerCase().replace(/[^\w]/g, '');
+  if (RAW_BY_EXT[ext]) return { decodable: false, label: RAW_BY_EXT[ext] };
+  if (!v) return { decodable: true, label: null };
+  if (RAW_BY_TAG[tag] && (!name || name === 'none' || name === 'unknown' || !decoders().has(name))) return { decodable: false, label: RAW_BY_TAG[tag] };
+  if (!name || name === 'none' || name === 'unknown' || (decoders().size > 50 && !decoders().has(name))) return { decodable: false, label: (tag && RAW_BY_TAG[tag]) || (ext === '.mxf' ? 'MXF (códec propietario)' : (v.codec_long_name && !/unknown/i.test(v.codec_long_name) ? v.codec_long_name : (tag ? tag.toUpperCase() : 'Códec no soportado'))) };
+  return { decodable: true, label: null };
+}
+
 async function probe(file) {
-  const raw = await run(FFPROBE, ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', file]);
+  let raw;
+  try { raw = await run(FFPROBE, ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', file]); }
+  catch (e) {
+    const ext = path.extname(file).toLowerCase();
+    if (RAW_BY_EXT[ext] || kindOf(file) === 'video') { const label = RAW_BY_EXT[ext] || 'Códec no soportado'; return { audioCodec: null, tcFormat: null, camera: {}, container: ext.slice(1), duration: null, bitrate: null, codec: label, codecLabel: label, decodable: false, width: null, height: null, fps: null, timecode: null, audioTracks: 0, audioChannels: 0 }; }
+    throw e;
+  }
   const j = JSON.parse(raw);
   const v = j.streams.find((s) => s.codec_type === 'video' && s.disposition?.attached_pic !== 1);
   const a = j.streams.filter((s) => s.codec_type === 'audio');
@@ -52,7 +82,9 @@ async function probe(file) {
     iso: pick(/(^iso$|iso_speed|exposure_?index|iso_?setting)/), isoNative: pick(/(native.*iso|iso.*native)/), wb: pick(/white.?balance|color.?temp/), shutter: pick(/shutter/),
     nd: pick(/nd.?filter/), lens: pick(/lens/), sensorFps: pick(/sensor.?fps|capture.?fps|sensor_frame/), rawColorSpace: pick(/raw.*color|color.?space/),
   };
+  const dec = decodability(file, v);
   return {
+    decodable: dec.decodable, codecLabel: dec.label,
     audioCodec: a[0]?.codec_name || null,
     tcFormat: tc ? (tc.includes(';') ? 'DF' : 'NDF') : null,
     tags: Object.keys(tags).length > 60 ? undefined : tags,
@@ -60,7 +92,7 @@ async function probe(file) {
     container: j.format?.format_name,
     duration: Number(j.format?.duration) || null,
     bitrate: Number(j.format?.bit_rate) || null,
-    codec: v?.codec_name || null,
+    codec: dec.decodable ? (v?.codec_name || null) : dec.label,
     profile: v?.profile || null,
     width: v?.width || null,
     height: v?.height || null,
@@ -78,8 +110,40 @@ async function probe(file) {
 
 async function thumbnail(file, outPath, atSeconds = 1, width = 320) {
   await fsp.mkdir(path.dirname(outPath), { recursive: true });
-  await run(FFMPEG, ['-v', 'error', '-y', '-ss', String(atSeconds), '-i', file, '-frames:v', '1', '-vf', `scale=${width}:-2`, '-q:v', '4', outPath]);
+  const exists = () => fsp.access(outPath).then(() => true, () => false);
+  await fsp.rm(outPath, { force: true });
+  // Si el momento pedido cae fuera del clip ffmpeg termina sin error pero sin fotograma: se reintenta con el primero.
+  for (const t of [atSeconds, 0]) {
+    await run(FFMPEG, ['-v', 'error', '-y', '-ss', String(t), '-i', file, '-frames:v', '1', '-vf', `scale=${width}:-2`, '-q:v', '4', outPath]);
+    if (await exists()) return outPath;
+  }
+  throw new Error('No se pudo extraer un fotograma del clip');
+}
+
+/** Miniatura generica (con el nombre del formato) para clips que no se pueden decodificar. */
+async function placeholderThumb(outPath, title, subtitle = 'sin vista previa') {
+  await fsp.mkdir(path.dirname(outPath), { recursive: true });
+  const { fontFile, filterPath } = require('./filters'); const os = require('node:os');
+  const font = fontFile(); const temps = []; const lines = [];
+  const mk = async (text, size, y, color) => { const f = path.join(os.tmpdir(), `cine_ph_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.txt`); await fsp.writeFile(f, text); temps.push(f); lines.push(`drawtext=fontfile='${filterPath(font)}':textfile='${filterPath(f)}':expansion=none:fontcolor=${color}:fontsize=${size}:x=(w-tw)/2:y=${y}`); };
+  try {
+    if (font) { await mk(String(title).slice(0, 26), 22, '(h-th)/2-16', '0xe8eaed'); await mk(subtitle, 13, '(h)/2+14', '0x9aa0a8'); }
+    await run(FFMPEG, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x161a22:s=320x180:d=1', ...(lines.length ? ['-vf', lines.join(',')] : []), '-frames:v', '1', '-q:v', '4', outPath]);
+  } finally { for (const f of temps) await fsp.rm(f, { force: true }); }
   return outPath;
+}
+
+/** Busca un proxy que la camara haya dejado junto al original (Sony: carpeta Sub, RED/ARRI/BRAW: _proxy, etc.). */
+async function findProxy(file) {
+  const dir = path.dirname(file); const base = path.basename(file, path.extname(file)).toLowerCase();
+  const dirs = [dir, ...['Sub', 'SUB', 'Proxy', 'PROXY', 'Proxies', '_proxy', '_Proxy'].flatMap((d) => [path.join(dir, d), path.join(dir, '..', d)])];
+  const re = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(_?(proxy|lr|lowres)|-proxy|s0?\\d)?\\.(mp4|mov|m4v)$`, 'i');
+  for (const d of dirs) {
+    let names = []; try { names = await fsp.readdir(d); } catch { continue; }
+    const hit = names.find((n) => re.test(n) && path.join(d, n) !== file);
+    if (hit) return path.join(d, hit);
+  }
+  return null;
 }
 
 const PRESETS = {
@@ -211,4 +275,4 @@ async function combineClips(files, output, opts) {
   return output;
 }
 
-module.exports = { probe, thumbnail, transcode, previewFrame, exportStill, lookThumb, filmstrip, combineClips, kindOf, run, PRESETS, STILL_PRESETS, FFMPEG, FFPROBE };
+module.exports = { probe, thumbnail, placeholderThumb, findProxy, decoders, transcode, previewFrame, exportStill, lookThumb, filmstrip, combineClips, kindOf, run, PRESETS, STILL_PRESETS, FFMPEG, FFPROBE };

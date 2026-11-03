@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 app.whenReady().then(async () => {
+  process.on('unhandledRejection', (e) => { console.error(e); app.exit(1); });
   const docs = path.join(__dirname, '..', 'docs');
   let html = fs.readFileSync(path.join(docs, 'guia.html'), 'utf8');
   html = html.replace(/<img src="img\/([\w-]+)\.png"/g, (m, name) => {
@@ -15,7 +16,8 @@ app.whenReady().then(async () => {
     return `<img src="data:image/jpeg;base64,${small.toJPEG(84).toString('base64')}"`;
   });
   const win = new BrowserWindow({ show: false, width: 900, height: 1200 });
-  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  const tmpHtml = path.join(require('node:os').tmpdir(), 'crisstack-guia.html'); fs.writeFileSync(tmpHtml, html); // un data: URL no admite tantas imagenes
+  await win.loadFile(tmpHtml);
   await new Promise((r) => setTimeout(r, 600));
   const pdf = await win.webContents.printToPDF({ pageSize: 'A4', printBackground: true, preferCSSPageSize: true,
     displayHeaderFooter: true, headerTemplate: '<span></span>',

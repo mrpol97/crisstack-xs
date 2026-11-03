@@ -1,6 +1,7 @@
 // Biblioteca: ficha de proyecto, carpetas (bins) en arbol, clips, metadatos, campos personalizados y carpetas inteligentes.
 const path = require('node:path');
 const crypto = require('node:crypto');
+const fsp = require('node:fs/promises');
 const media = require('./media');
 const { walk } = require('./offload');
 
@@ -166,15 +167,39 @@ class Library {
         if (clip.kind !== 'video' && clip.kind !== 'audio') continue;
         try {
           clip.meta = await media.probe(clip.path);
-          if (clip.kind === 'video') {
-            const at = Math.min(1, (clip.meta.duration || 1) / 2);
-            clip.thumb = await media.thumbnail(clip.path, path.join(this.thumbDir, `${clip.id}.jpg`), at);
-          }
-        } catch (e) { clip.metaError = e.message; }
+          if (clip.kind === 'video') await this.makeThumb(clip);
+        } catch (e) { clip.metaError = e.message; if (clip.kind === 'video' && !clip.thumb) { try { clip.thumb = await media.placeholderThumb(path.join(this.thumbDir, `${clip.id}.jpg`), 'No se pudo leer', 'sin vista previa'); } catch { /* sin miniatura */ } } }
         this.store.save();
         onClip?.(clip);
       }
     })();
+  }
+
+  /**
+   * Miniatura de un clip. Si el codec no se puede decodificar (RAW de camara...) se usa su proxy, y si no hay, una miniatura generica
+   * con el nombre del formato. Tambien rellena los datos que falten (duracion, resolucion) desde el proxy.
+   */
+  async makeThumb(clip) {
+    const out = path.join(this.thumbDir, `${clip.id}.jpg`);
+    clip.thumbRev = (clip.thumbRev || 0) + 1; // cambia la direccion de la miniatura para que la interfaz no use la antigua
+    let src = clip.path;
+    if (clip.meta?.decodable === false) {
+      if (!clip.proxy || !(await fsp.access(clip.proxy).then(() => true, () => false))) clip.proxy = (await media.findProxy(clip.path)) || undefined;
+      if (!clip.proxy) { clip.thumb = await media.placeholderThumb(out, clip.meta.codecLabel || 'RAW', 'sin decodificador · vincula un proxy'); return clip.thumb; }
+      src = clip.proxy;
+      try { const pm = await media.probe(src); for (const k of ['duration', 'width', 'height', 'fps', 'timecode']) if (!clip.meta[k] && pm[k]) clip.meta[k] = pm[k]; } catch { /* el proxy no se pudo leer */ }
+    }
+    try { clip.thumb = await media.thumbnail(src, out, Math.min(1, (clip.meta?.duration || 1) / 2)); }
+    catch (e) { clip.thumb = await media.placeholderThumb(out, clip.meta?.codecLabel || 'Sin vista previa', 'no se pudo extraer un fotograma'); clip.meta = { ...(clip.meta || {}), thumbError: e.message }; }
+    return clip.thumb;
+  }
+
+  /** Vincula (o quita, con file=null) un proxy a un clip y rehace su miniatura. */
+  async linkProxy(id, file) {
+    const c = this.clips[id]; if (!c) throw new Error('Clip no encontrado');
+    if (file) { await fsp.access(file); c.proxy = file; } else delete c.proxy;
+    if (c.kind === 'video') await this.makeThumb(c);
+    this.store.save(); return c;
   }
 
   /** Registra los ficheros de un job (primer destino). Las carpetas se crean segun la ruta copiada. */

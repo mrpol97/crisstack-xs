@@ -15,7 +15,7 @@ function clipHasLook(c) {
 }
 /** Direccion de la miniatura de un clip; con el interruptor activo lleva aplicados la LUT, el ajuste de color y la transformacion. */
 function thumbSrc(c) {
-  let q = `?v=${c.thumbAt ?? 0}`;
+  let q = `?v=${c.thumbAt ?? 0}.${c.thumbRev ?? 0}`;
   if (state.lib.thumbLook !== false && clipHasLook(c)) q += `&look=1&k=${hash32(JSON.stringify([c.look, c.transform]))}`;
   return `cine://thumb/${c.id}${q}`;
 }

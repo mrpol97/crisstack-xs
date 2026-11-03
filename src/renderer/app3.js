@@ -147,12 +147,13 @@ async function libraryScreen() {
   if (L.bin && !bins.some((b) => b.id === L.bin)) L.bin = null;
 
   const kids = new Map(); for (const b of bins) { const k = b.parent || null; (kids.get(k) || kids.set(k, []).get(k)).push(b); }
-  const row = (label, count, active, onclick, depth = 0, toggle = null, title = '') => h('button', { class: 'trow' + (active ? ' active' : ''), style: `padding-left:${8 + depth * 14}px`, title, onclick },
+  const row = (label, count, active, onclick, depth = 0, toggle = null, title = '', bin = null) => h('button', { class: 'trow' + (active ? ' active' : ''), style: `padding-left:${8 + depth * 14}px`, title, onclick, ...(bin ? binRowProps(bin) : {}) },
     toggle ? h('span', { class: 'tog', role: 'button', 'aria-label': toggle.open ? 'Contraer' : 'Expandir', onclick: (e) => { e.stopPropagation(); toggle.fn(); } }, toggle.open ? '▾' : '▸') : h('span', { class: 'tog' }),
-    h('span', { class: 'ficon', 'aria-hidden': 'true' }, '▤'), h('span', { class: 'tname' }, label), h('span', { class: 'mut' }, count ?? ''));
+    h('span', { class: 'ficon', 'aria-hidden': 'true' }, '▤'), h('span', { class: 'tname' }, label), h('span', { class: 'mut' }, count ?? ''),
+    bin ? h('span', { class: 'rowmenu', role: 'button', 'aria-label': `Acciones de la carpeta ${bin.name}`, title: 'Renombrar, nueva subcarpeta, eliminar…', onclick: (e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); binMenu(bin, r.left, r.bottom); } }, '⋯') : '');
   const branch = (b, depth) => {
     const ch = kids.get(b.id) || []; const open = !L.closed.has(b.id);
-    return [row(b.name, b.count, L.bin === b.id, () => { L.bin = b.id; L.smart = null; render(); }, depth, ch.length ? { open, fn: () => { open ? L.closed.add(b.id) : L.closed.delete(b.id); render(); } } : null, b.name),
+    return [row(b.name, b.count, L.bin === b.id, () => { L.bin = b.id; L.smart = null; render(); }, depth, ch.length ? { open, fn: () => { open ? L.closed.add(b.id) : L.closed.delete(b.id); render(); } } : null, b.name, b),
       ...(open ? ch.flatMap((c) => branch(c, depth + 1)) : [])];
   };
   const isUnder = (binId, ancestor) => { let cur = bins.find((b) => b.id === binId); const seen = new Set(); while (cur && cur.parent && !seen.has(cur.id)) { seen.add(cur.id); if (cur.parent === ancestor) return true; cur = bins.find((b) => b.id === cur.parent); } return false; };
@@ -167,6 +168,7 @@ async function libraryScreen() {
   const tree = h('div', { class: 'pane tree' }, projCard,
     h('div', { class: 'grp' }, 'Carpetas'), row('Todos los clips', total, !L.bin && !L.smart, () => { L.bin = L.smart = null; render(); }),
     ...(kids.get(null) || []).flatMap((b) => branch(b, 0)),
+    h('button', { class: 'trow', onclick: () => newBinUI(L.bin ? bins.find((b) => b.id === L.bin) : null) }, h('span', { class: 'tog' }), h('span', { class: 'tname mut' }, L.bin ? '+ Nueva subcarpeta aquí' : '+ Nueva carpeta')),
     h('div', { class: 'grp' }, 'Carpetas inteligentes'),
     ...smarts.map((s) => row(s.name, '', L.smart === s.id, () => { L.smart = s.id; L.bin = null; render(); })),
     h('button', { class: 'trow', onclick: smartDialog }, h('span', { class: 'tog' }), h('span', { class: 'tname mut' }, '+ Nueva carpeta inteligente')));
@@ -331,7 +333,7 @@ function drawList(host) {
     return td;
   };
   const head = h('tr', {}, ...cols.map((c) => h('th', { style: `min-width:${c.w}px`, 'aria-sort': L.sort.col === c.id ? (L.sort.dir > 0 ? 'ascending' : 'descending') : 'none', onclick: () => { L.sort = { col: c.id, dir: L.sort.col === c.id ? -L.sort.dir : 1 }; drawClips($('#clipGrid')); } }, c.label, L.sort.col === c.id ? (L.sort.dir > 0 ? ' ▴' : ' ▾') : '')));
-  const body = L.clips.map((c, idx) => h('tr', { class: L.sel.has(c.id) ? 'sel' : '', tabindex: 0, onclick: (e) => selectClip(c, idx, e), ondblclick: () => play(c) }, ...cols.map((colDef) => cell(c, colDef))));
+  const body = L.clips.map((c, idx) => h('tr', { class: L.sel.has(c.id) ? 'sel' : '', tabindex: 0, draggable: 'true', ondragstart: (e) => clipDrag(e, c), ondragend: () => { L.dragIds = null; }, oncontextmenu: (e) => clipCtx(e, c), onclick: (e) => selectClip(c, idx, e), ondblclick: () => play(c) }, ...cols.map((colDef) => cell(c, colDef))));
   host.replaceChildren(h('table', { class: 'ltable' }, h('thead', {}, head), h('tbody', {}, ...body)), h('div', { class: 'mut', style: 'padding:6px 4px' }, `${L.clips.length} clips · doble clic en una celda subrayada para editarla · doble clic en la fila para reproducir`));
 }
 render();

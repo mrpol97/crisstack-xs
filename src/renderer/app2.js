@@ -17,8 +17,11 @@ function colorPanel(sel, one) {
   const looksBox = h('div', { class: 'row' });
   api.invoke('looks:list').then((ls) => looksBox.replaceChildren(...ls.map((l) => h('span', { class: 'chip', title: 'Aplicar look' }, h('span', { onclick: async () => { look.cdl = clone(l.cdl); look.lut = l.lut; if (l.lut && state.player) await state.player.setLut(await api.invoke('lut:read', l.lut)); live(); render(); } }, l.name), h('button', { class: 'x', style: 'all:unset;cursor:pointer;color:var(--mut)', 'aria-label': 'Borrar look', onclick: async () => { await api.invoke('looks:remove', l.id); render(); } }, '×')))));
   const sel1 = (label, opts, val, fn) => h('label', { class: 'f', style: 'flex:1' }, label, h('select', { onchange: (e) => fn(e.target.value) }, ...opts.map(([v, l]) => h('option', { value: v, selected: String(v) === String(val ?? '') }, l))));
-  const crop = tr.crop || { x: 0, y: 0, w: 1, h: 1 };
-  const cs = (k, label) => h('label', { class: 'f', style: 'flex:1' }, label, h('input', { type: 'range', min: k === 'w' || k === 'h' ? 0.05 : 0, max: 1, step: 0.01, value: crop[k], oninput: (e) => { crop[k] = Number(e.target.value); crop.w = Math.min(crop.w, 1 - crop.x); crop.h = Math.min(crop.h, 1 - crop.y); tr.crop = (crop.x || crop.y || crop.w < 1 || crop.h < 1) ? { ...crop } : undefined; liveTr(); } }));
+  const crop = { x: 0, y: 0, w: 1, h: 1, ...(tr.crop || {}) }; const sliders = {};
+  // Los cuatro deslizadores se limitan entre si (x + ancho <= 1, y + alto <= 1) para que al ir y volver el recorte no quede en un estado raro.
+  const syncCrop = () => { const lim = { x: 1 - crop.w, y: 1 - crop.h, w: 1 - crop.x, h: 1 - crop.y }; for (const k of ['x', 'y', 'w', 'h']) if (sliders[k]) { sliders[k].max = lim[k]; sliders[k].value = crop[k]; } };
+  const setCrop = () => { tr.crop = (crop.x > 0.001 || crop.y > 0.001 || crop.w < 0.999 || crop.h < 0.999) ? { x: +crop.x.toFixed(3), y: +crop.y.toFixed(3), w: +crop.w.toFixed(3), h: +crop.h.toFixed(3) } : undefined; };
+  const cs = (k, label) => h('label', { class: 'f', style: 'flex:1' }, label, sliders[k] = h('input', { type: 'range', min: k === 'w' || k === 'h' ? 0.05 : 0, max: 1, step: 0.01, value: crop[k], oninput: (e) => { crop[k] = Number(e.target.value); setCrop(); syncCrop(); liveTr(); } }));
   const body = h('div', {},
     grp('slope', 'Slope (ganancia)', 0, 3, 0.01), grp('offset', 'Offset', -0.3, 0.3, 0.005), grp('power', 'Power (gamma)', 0.3, 3, 0.01),
     h('label', { class: 'f', style: 'margin-top:6px' }, 'Saturación', h('input', { type: 'range', min: 0, max: 2, step: 0.01, value: look.cdl.sat, oninput: (e) => { look.cdl.sat = Number(e.target.value); live(); } })),
@@ -41,7 +44,11 @@ function colorPanel(sel, one) {
     h('div', { class: 'row' }, sel1('Desqueeze', [[1, '1.0×'], [1.25, '1.25×'], [1.33, '1.33×'], [1.5, '1.5×'], [1.8, '1.8×'], [2, '2.0×']], tr.desqueeze || 1, (v) => { tr.desqueeze = Number(v); liveTr(); }),
       sel1('Espejo', [['', 'Ninguno'], ['h', 'Horizontal'], ['v', 'Vertical'], ['hv', 'Ambos']], tr.flip, (v) => { tr.flip = v || undefined; liveTr(); }),
       sel1('Rotar', [[0, '0°'], [90, '90°'], [180, '180°'], [270, '270°']], tr.rotate || 0, (v) => { tr.rotate = Number(v) || undefined; liveTr(); })),
-    h('div', { class: 'row', style: 'margin-top:6px' }, cs('x', 'Crop X'), cs('y', 'Crop Y'), cs('w', 'Ancho'), cs('h', 'Alto')));
+    h('div', { class: 'row', style: 'margin-top:6px' }, cs('x', 'Recorte X'), cs('y', 'Recorte Y'), cs('w', 'Ancho'), cs('h', 'Alto')),
+    h('div', { class: 'row', style: 'margin-top:6px' },
+      h('button', { class: 'btn', title: 'Quita el recorte y deja la imagen entera', onclick: () => { Object.assign(crop, { x: 0, y: 0, w: 1, h: 1 }); tr.crop = undefined; syncCrop(); liveTr(); } }, 'Restablecer recorte'),
+      h('button', { class: 'btn', title: 'Quita recorte, desqueeze, espejo y rotación', onclick: () => { for (const k of ['crop', 'desqueeze', 'flip', 'rotate']) tr[k] = undefined; liveTr(); render(); } }, 'Restablecer transformación')));
+  syncCrop();
   body.append(h('div', { class: 'row', style: 'margin-top:10px' }, sel1('Orden de aplicación', [['lut-first', 'LUT primero y ajuste del clip encima (recomendado)'], ['cdl-first', 'Ajuste del clip primero y LUT después']], look.order || 'lut-first', (v) => { look.order = v; live(); })));
   return h('details', { style: 'margin-top:12px', open: !!(one?.look || one?.transform) }, h('summary', { style: 'cursor:pointer;color:var(--mut);text-transform:uppercase;letter-spacing:.07em;font-size:12px;font-weight:600' }, 'Color y transformación'), body);
 }
