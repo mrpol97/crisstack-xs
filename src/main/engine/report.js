@@ -44,7 +44,25 @@ function jobSummary(jobs) {
   return `<div><span class="stat"><b>${jobs.length}</b>Jobs</span><span class="stat"><b>${files}</b>Ficheros</span><span class="stat"><b>${fmtBytes(bytes)}</b>Datos</span><span class="stat"><b class="${fails ? 'bad' : 'ok'}">${fails ? fails + ' errores' : 'Todo verificado'}</b>Estado</span></div>`;
 }
 
-function build(type, { clips = [], jobs = [], project = 'Proyecto', day = '', dark = false, projectInfo = null } = {}) {
+/** Columnas elegibles para el informe de clips: id -> [titulo, funcion]. Las columnas propias llegan como custom:<nombre>. */
+const REPORT_COLUMNS = {
+  name: ['Clip', (c) => c.name], reel: ['Reel', (c) => c.reel], camera: ['Cámara', (c) => c.camera], scene: ['Escena', (c) => c.scene], shot: ['Plano', (c) => c.shot], take: ['Toma', (c) => c.take],
+  shotId: ['ShotID', (c) => c.shotId], format: ['Formato', (c) => (c.meta?.width ? `${c.meta.width}×${c.meta.height}` : '')], codec: ['Códec', (c) => c.meta?.codec], fps: ['FPS', (c) => (c.meta?.fps ? +c.meta.fps.toFixed(3) : '')],
+  tcStart: ['TC inicio', (c) => c.meta?.timecode], duration: ['Duración', (c) => fmtDur(c.meta?.duration)], size: ['Tamaño', (c) => fmtBytes(c.size)], rating: ['Valoración', (c) => '★'.repeat(c.rating || 0)],
+  flag: ['Marca', (c) => ({ good: 'Bueno', bad: 'Malo', hold: 'Pendiente', circled: 'Circled' }[c.flag] || '')], status: ['Estado', (c) => c.verified], iso: ['ISO', (c) => c.cam?.iso ?? c.meta?.camera?.iso],
+  wb: ['WB', (c) => c.cam?.wb ?? c.meta?.camera?.wb], lens: ['Lente', (c) => c.cam?.lens ?? c.meta?.camera?.lens], shutter: ['Shutter', (c) => c.cam?.shutter ?? c.meta?.camera?.shutter],
+  volume: ['Volumen', (c) => c.volume], backups: ['Backups', (c) => (c.copies || []).filter((x) => ['verified', 'copied'].includes(x.status)).length], notes: ['Notas', (c) => c.notes],
+};
+function customTable(clips, columns, customFields = []) {
+  const defs = columns.map((id) => (id.startsWith('custom:') ? [id.slice(7), (c) => c.custom?.[id.slice(7)]] : REPORT_COLUMNS[id])).filter(Boolean);
+  const head = defs.map(([l]) => `<th>${esc(l)}</th>`).join('');
+  const rows = clips.map((c) => `<tr>${defs.map(([, fn]) => `<td>${esc(fn(c) ?? '')}</td>`).join('')}</tr>`).join('');
+  return `<table><tr>${head}</tr>${rows}</table>`;
+}
+
+
+function build(type, { clips = [], jobs = [], project = 'Proyecto', day = '', dark = false, projectInfo = null, title = '', columns = [], customFields = [] } = {}) {
+  const T = (d) => (title || d);
   CURRENT_INFO = projectInfo;
   if (projectInfo?.name) project = projectInfo.name;
   const sub = `${project}${day ? ' · Día ' + day : ''} · generado ${new Date().toLocaleString('es-ES')}`;
@@ -60,22 +78,23 @@ function build(type, { clips = [], jobs = [], project = 'Proyecto', day = '', da
       }
       body += '</table>';
     }
-    return wrap('Informe de volumen', sub, body, dark);
+    return wrap(T('Informe de volumen'), sub, body, dark);
   }
   if (type === 'thumbnails' || type === 'contact_print') {
     const per = type === 'contact_print' ? '' : '';
     const cards = clips.filter((c) => c.kind === 'video').map((c) => `<div class="card"><img src="${thumbSrc(c)}" alt=""><div><b>${esc(c.name)}</b><br>${esc(c.meta?.timecode || '')} ${fmtDur(c.meta?.duration)}${type === 'thumbnails' ? `<br>${esc(c.scene)} ${esc(c.shot)} ${esc(c.take)} ${c.flag ? '· ' + esc(c.flag) : ''}` : ''}</div></div>`).join('');
-    return wrap(type === 'contact_print' ? 'Contact print' : 'Informe de miniaturas', sub, `<div class="grid">${cards}</div>${per}`, dark);
+    return wrap(T(type === 'contact_print' ? 'Contact print' : 'Informe de miniaturas'), sub, `<div class="grid">${cards}</div>${per}`, dark);
   }
   const rows = clips.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.reel)}</td><td>${esc(c.scene)}/${esc(c.shot)}/${esc(c.take)}</td><td>${esc(c.meta?.codec || '')} ${c.meta?.width ? c.meta.width + 'x' + c.meta.height : ''}</td><td>${c.meta?.fps ? c.meta.fps.toFixed(3) : ''}</td><td>${esc(c.meta?.timecode || '')}</td><td>${fmtDur(c.meta?.duration)}</td><td>${fmtBytes(c.size)}</td><td>${esc(c.flag)} ${'★'.repeat(c.rating || 0)}</td><td class="${c.verified === 'verified' ? 'ok' : 'bad'}">${esc(c.verified)}</td></tr>`).join('');
-  const table = `<table><tr><th>Clip</th><th>Reel</th><th>Esc/Plano/Toma</th><th>Formato</th><th>FPS</th><th>TC</th><th>Dur.</th><th>Tamaño</th><th>Valoración</th><th>Estado</th></tr>${rows}</table>`;
+  let table = `<table><tr><th>Clip</th><th>Reel</th><th>Esc/Plano/Toma</th><th>Formato</th><th>FPS</th><th>TC</th><th>Dur.</th><th>Tamaño</th><th>Valoración</th><th>Estado</th></tr>${rows}</table>`;
+  if (columns?.length) table = customTable(clips, columns, customFields);
   if (type === 'shooting_day') {
     const dur = clips.reduce((s, c) => s + (c.meta?.duration || 0), 0);
     const size = clips.reduce((s, c) => s + (c.size || 0), 0);
     const head = `<div><span class="stat"><b>${clips.length}</b>Clips</span><span class="stat"><b>${fmtDur(dur)}</b>Duración</span><span class="stat"><b>${fmtBytes(size)}</b>Datos</span></div>`;
-    return wrap('Informe del día de rodaje', sub, head + jobSummary(jobs) + '<h2>Clips</h2>' + table, dark);
+    return wrap(T('Informe del día de rodaje'), sub, head + jobSummary(jobs) + '<h2>Clips</h2>' + table, dark);
   }
-  return wrap('Informe de clips', sub, table, dark);
+  return wrap(T('Informe de clips'), sub, table, dark);
 }
 
 function toCsv(clips) {
@@ -104,4 +123,4 @@ function toEdl(clips, title = 'CINESTACK', fps = 25) {
   return out.join('\n');
 }
 
-module.exports = { build, toCsv, toEdl };
+module.exports = { REPORT_COLUMNS, build, toCsv, toEdl };

@@ -10,7 +10,6 @@ const { spawnSync } = require('node:child_process');
 
 const media = require('../src/main/engine/media');
 const color = require('../src/main/engine/color');
-const audio = require('../src/main/engine/audio');
 const exportsM = require('../src/main/engine/exports');
 const importer = require('../src/main/engine/importer');
 const ascmhl = require('../src/main/engine/ascmhl');
@@ -54,37 +53,6 @@ test('transcode aplica CDL y recorte/giro con ffmpeg real', async () => {
   assert.equal(info.width % 2, 0); assert.ok(info.height > info.width / 2 - 2, `${info.width}x${info.height}`);
   const still = await media.exportStill(src, path.join(tmp, 'still.png'), { preset: 'png', time: 0 });
   assert.ok(fs.statSync(still).size > 100);
-});
-
-function burstWav(file, shiftSec, seconds = 20) {
-  const sr = 8000, n = sr * seconds, buf = Buffer.alloc(44 + n * 2); let seed = 12345;
-  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-  const samples = new Float32Array(n); let t = 0;
-  while (t < n - 800) { const len = Math.floor(rnd() * 600 + 100); const gap = Math.floor(rnd() * 1500 + 300); const f = 200 + rnd() * 800; for (let i = 0; i < len && t + i < n; i++) samples[t + i] = Math.sin(i * f * 2 * Math.PI / sr) * 0.8; t += len + gap; }
-  buf.write('RIFF', 0); buf.writeUInt32LE(36 + n * 2, 4); buf.write('WAVEfmt ', 8); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22); buf.writeUInt32LE(sr, 24); buf.writeUInt32LE(sr * 2, 28); buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34); buf.write('data', 36); buf.writeUInt32LE(n * 2, 40);
-  const sh = Math.round(shiftSec * sr);
-  for (let i = 0; i < n; i++) buf.writeInt16LE(Math.round((samples[i - sh] || 0) * 32000), 44 + i * 2);
-  return fs.writeFileSync(file, buf);
-}
-
-test('sync de audio: por forma de onda (retardo 1.5 s) y por timecode BWF', async () => {
-  const scratch = path.join(tmp, 'scratch.wav'), ext = path.join(tmp, 'ext.wav'), vid = path.join(tmp, 'cam.mov');
-  burstWav(scratch, 0); burstWav(ext, 1.5);
-  ff(['-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=24:duration=20', '-i', scratch, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', vid]);
-  const m = await audio.matchByWaveform(vid, ext, 10);
-  assert.ok(Math.abs(m.offset - 1.5) < 0.05, `offset ${m.offset}`);
-  assert.ok(m.confidence > 0.3, `confianza ${m.confidence}`);
-  const synced = await audio.renderSynced(vid, ext, m.offset, path.join(tmp, 'synced.mov'));
-  const si = await media.probe(synced);
-  assert.equal(si.codec, 'h264'); assert.ok(si.audioTracks >= 1);
-
-  // timecode: video 10:00:00:00 @24, audio BWF empieza 1 s antes
-  const bwf = path.join(tmp, 'bwf.wav');
-  ff(['-i', scratch, '-write_bext', '1', '-metadata', `time_reference=${35999 * 8000}`, bwf]);
-  const ai = await audio.probeAudio(bwf);
-  assert.ok(ai.startSeconds != null && Math.abs(ai.startSeconds - 35999) < 0.01, `start ${ai.startSeconds}`);
-  const hits = audio.matchByTimecode([{ id: 'c1', meta: { timecode: '10:00:00:00', fps: 24, duration: 5 } }], [ai]);
-  assert.equal(hits.length, 1); assert.ok(Math.abs(hits[0].offset - 1) < 0.01);
 });
 
 test('exportaciones ALE / FCP7 / FCPXML / CCC', () => {

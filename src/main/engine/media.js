@@ -3,6 +3,7 @@ const path = require('node:path');
 const fsp = require('node:fs/promises');
 const { spawn } = require('node:child_process');
 
+const { buildVf, metadataArgs, presetArgsWithout } = require('./filters');
 const unpacked = (p) => p.replace('app.asar' + path.sep, 'app.asar.unpacked' + path.sep);
 const FFMPEG = unpacked(require('ffmpeg-static'));
 const FFPROBE = unpacked(require('ffprobe-static').path);
@@ -105,30 +106,11 @@ async function transcode(input, output, opts) {
   const preset = PRESETS[opts.preset];
   if (!preset) throw new Error(`Preset desconocido: ${opts.preset}`);
   await fsp.mkdir(path.dirname(output), { recursive: true });
-  const vf = [];
-  if (opts.crop) { const c = opts.crop; vf.push(`crop=iw*${c.w}:ih*${c.h}:iw*${c.x}:ih*${c.y}`); }
-  if (opts.desqueeze && opts.desqueeze !== 1) vf.push(`scale=iw*${Number(opts.desqueeze)}:ih,setsar=1`);
-  if (opts.flip === 'h' || opts.flip === 'hv') vf.push('hflip');
-  if (opts.flip === 'v' || opts.flip === 'hv') vf.push('vflip');
-  if (opts.rotate === 90) vf.push('transpose=1'); else if (opts.rotate === 180) vf.push('hflip,vflip'); else if (opts.rotate === 270) vf.push('transpose=2');
-  for (const l of (opts.luts || (opts.lut ? [opts.lut] : []))) vf.push(`lut3d='${filterPath(l)}'`);
-  if (opts.height) vf.push(`scale=-2:${Number(opts.height)}`);
-  if (opts.burnTimecode || opts.burnName) {
-    const parts = [];
-    const ff = fontFile();
-    if (opts.burnTimecode) {
-      const tc = (opts.startTimecode || '00:00:00:00').replace(/:/g, '\\:');
-      parts.push(`drawtext=fontfile='${ff}':timecode='${tc}':rate=${opts.fps || 25}:fontcolor=white:fontsize=h/28:box=1:boxcolor=black@0.5:x=(w-tw)/2:y=h-th-20`);
-    }
-    if (opts.burnName) {
-      const t = path.basename(input).replace(/[:'\\]/g, ' ');
-      parts.push(`drawtext=fontfile='${ff}':text='${t}':fontcolor=white:fontsize=h/32:box=1:boxcolor=black@0.5:x=20:y=20`);
-    }
-    vf.push(...parts);
-  }
+  const { vf, temps } = await buildVf(input, opts);
   // Se escribe a un fichero temporal y solo se renombra si ffmpeg termina bien y el resultado tiene tamano: nunca queda un clip vacio.
   const tmp = path.join(path.dirname(output), `.${path.basename(output, path.extname(output))}.partial${path.extname(output)}`);
-  const args = ['-v', 'error', '-y', '-i', input, '-map', '0:v:0', '-map', '0:a?', ...(vf.length ? ['-vf', vf.join(',')] : []), ...preset.args, '-progress', 'pipe:1', '-nostats', tmp];
+  const mdArgs = metadataArgs(preset, opts);
+  const args = ['-v', 'error', '-y', '-i', input, '-map', '0:v:0', '-map', '0:a?', ...(vf.length ? ['-vf', vf.join(',')] : []), ...presetArgsWithout(preset.args, mdArgs.includes('-movflags')), ...mdArgs, '-progress', 'pipe:1', '-nostats', tmp];
   try {
     await new Promise((resolve, reject) => {
       const p = spawn(FFMPEG, args, { windowsHide: true, signal: opts.signal });
@@ -148,8 +130,26 @@ async function transcode(input, output, opts) {
   } catch (e) {
     await fsp.rm(tmp, { force: true });
     throw e;
+  } finally {
+    for (const f of temps) await fsp.rm(f, { force: true });
   }
   return output;
+}
+
+/** Fotograma de previsualizacion (data URL JPEG) con los mismos filtros que tendra el transcode. opts incluye time. */
+async function previewFrame(input, opts = {}) {
+  const { vf, temps } = await buildVf(input, opts);
+  try {
+    vf.push("scale='min(960,iw)':-2");
+    const buf = await new Promise((resolve, reject) => {
+      const p = spawn(FFMPEG, ['-v', 'error', '-ss', String(opts.time || 0), '-i', input, '-frames:v', '1', '-vf', vf.join(','), '-f', 'image2pipe', '-vcodec', 'mjpeg', '-q:v', '3', '-'], { windowsHide: true });
+      const chunks = []; let err = '';
+      p.stdout.on('data', (d) => chunks.push(d)); p.stderr.on('data', (d) => (err += d));
+      p.on('error', reject);
+      p.on('close', (code) => (code === 0 && chunks.length ? resolve(Buffer.concat(chunks)) : reject(new Error(err.trim().split('\n').slice(-3).join('\n') || 'No se pudo generar la previsualización'))));
+    });
+    return `data:image/jpeg;base64,${buf.toString('base64')}`;
+  } finally { for (const f of temps) await fsp.rm(f, { force: true }); }
 }
 
 const STILL_PRESETS = { jpeg: { ext: '.jpg', args: ['-q:v', '2'] }, png: { ext: '.png', args: [] }, tiff: { ext: '.tif', args: ['-pix_fmt', 'rgb48le'] } };
@@ -186,4 +186,4 @@ async function combineClips(files, output, opts) {
   return output;
 }
 
-module.exports = { probe, thumbnail, transcode, exportStill, combineClips, kindOf, run, PRESETS, STILL_PRESETS, FFMPEG, FFPROBE };
+module.exports = { probe, thumbnail, transcode, previewFrame, exportStill, combineClips, kindOf, run, PRESETS, STILL_PRESETS, FFMPEG, FFPROBE };

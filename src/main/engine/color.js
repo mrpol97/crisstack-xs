@@ -63,14 +63,17 @@ function parseCdlXml(xml) {
 
 /** Escribe los .cube necesarios para un look y devuelve la cadena de lut3d de ffmpeg (o null). */
 async function buildFfmpegLooks(look, tmpDir) {
+  // Orden por defecto: LUT de base y, encima, el ajuste fino del clip (CDL). 'cdl-first' lo invierte (ajuste en log y despues LUT).
+  const cdlFirst = look?.order === 'cdl-first';
   const luts = [];
+  let cdlCube = null;
   if (look?.cdl && !isIdentity(look.cdl)) {
     await fsp.mkdir(tmpDir, { recursive: true });
-    const f = path.join(tmpDir, `cdl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.cube`);
-    await fsp.writeFile(f, cdlToCube(look.cdl, 33));
-    luts.push(f);
+    cdlCube = path.join(tmpDir, `cdl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.cube`);
+    await fsp.writeFile(cdlCube, cdlToCube(look.cdl, 33));
   }
-  if (look?.lut) luts.push(look.lut);
+  if (cdlFirst) { if (cdlCube) luts.push(cdlCube); if (look?.lut) luts.push(look.lut); }
+  else { if (look?.lut) luts.push(look.lut); if (cdlCube) luts.push(cdlCube); }
   return luts;
 }
 

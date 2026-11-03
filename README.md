@@ -46,6 +46,20 @@ La primera vez, macOS pedirá abrirla con clic derecho → Abrir (no está firma
 - **Transcodificar**: ProRes Proxy/422/HQ, DNxHR LB/SQ, H.264, H.265; escalado, LUT `.cube`,
   timecode y nombre quemados; puede lanzarse automáticamente tras el offload.
 
+## Novedades v0.4
+
+- **Offload**: orígenes de cámara o de sonido (cada uno con su plantilla: Día 1 → Camara_A y Sonido), copia de **ficheros sueltos**,
+  y **varios informes** al terminar. Cada tarjeta muestra sus pasos, el fichero actual, el paso (copiando / verificando destino N),
+  velocidad y tiempo restante; al acabar, botones para abrir en el Finder las carpetas de la copia, los informes y los transcodes.
+- **Ajustes de transcode** (en Offload y en Transcodificar): píxeles, LUT, timecode / nombre / texto libre quemados, looks y
+  transformaciones, subida a S3, carpeta de salida y **metadatos a transportar** (proyecto, equipo, escena, toma, ISO…, escritos en el fichero).
+  Con **previsualización** de un fotograma con todos los ajustes puestos.
+- **Informes configurables**: varias configuraciones guardadas (tipo, formato, tema, título, alcance y columnas), generación múltiple,
+  exportar e importar la configuración.
+- **Color**: aplicar una **LUT a una selección, a una carpeta o a toda la biblioteca**; el ajuste (CDL) de cada clip se aplica encima
+  (orden configurable).
+- **Comparar** pasa a ser una vista de la biblioteca. Se elimina la sincronización de audio.
+
 ## Novedades v0.3
 
 - **Proyectos con ficha**: nombre, director, dir. de fotografía, ayudantes de cámara, DIT, data manager, sonido, script, productor,
@@ -64,7 +78,6 @@ La primera vez, macOS pedirá abrirla con clic derecho → Abrir (no está firma
 - **Visual controls**: color falso, zebra, clipping, peaking, líneas de encuadre, desqueeze, espejo, rotación, recorte,
   scopes (waveform, histograma, vectorscopio), pantalla completa, miniatura personalizada, still con look.
 - **Comparar**: cuadrícula o cortina (wipe) con dos clips sincronizados.
-- **Audio**: sincronización por timecode BWF o por forma de onda, y render del clip con el audio externo.
 - **Intercambio**: exporta Avid ALE, Premiere/FCP7 XML, FCPXML (FCP X / Resolve), CCC, EDL, CSV; importa CSV/ALE
   (hojas de rodaje) con mapeo de columnas.
 - **Archivo**: ASC MHL con generaciones y cadena C4, relink por nombre+tamaño+hash, detección de secuencias de imagen,

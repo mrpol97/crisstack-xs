@@ -181,9 +181,10 @@ async function libraryScreen() {
   const center = h('div', { class: 'pane center' },
     h('div', { class: 'row', style: 'margin-bottom:6px;flex-wrap:nowrap' }, importMenu,
       h('input', { type: 'text', placeholder: 'Buscar clip, escena, ShotID, notas…', value: L.search, style: 'flex:1;min-width:120px', oninput: (e) => { L.search = e.target.value; clearTimeout(L.t); L.t = setTimeout(refreshClips, 200); } }),
-      h('span', { class: 'segs' }, modeBtn('list', 'Lista', 'Tabla con todas las columnas'), modeBtn('grid', 'Miniaturas', 'Miniaturas de los clips'), modeBtn('folders', 'Carpetas', 'Resumen por carpeta: clips, tamaño y tipos'))),
+      h('span', { class: 'segs' }, modeBtn('list', 'Lista', 'Tabla con todas las columnas'), modeBtn('grid', 'Miniaturas', 'Miniaturas de los clips'), modeBtn('folders', 'Carpetas', 'Resumen por carpeta: clips, tamaño y tipos'), modeBtn('compare', 'Comparar', 'Dos clips seleccionados, en cuadrícula o con cortina'))),
     h('div', { class: 'row', style: 'margin-bottom:8px;justify-content:space-between' }, crumbEl,
       h('span', { class: 'row' }, L.mode === 'list' ? h('button', { class: 'btn', onclick: columnsDialog }, 'Columnas…') : '',
+        h('button', { class: 'btn', title: 'Aplica una LUT a la selección, a una carpeta o a todo; después puedes ajustar un poco el color de cada clip', onclick: lutDialog }, 'LUT…'),
         h('button', { class: 'btn', title: 'Exporta las columnas visibles', onclick: exportColumns }, 'CSV'), h('button', { class: 'btn', onclick: async () => { const f = await api.invoke('export:edl', [...L.sel], 25); if (f) toast('EDL guardado'); } }, 'EDL'))),
     h('div', { id: 'clipGrid', class: 'clips' }));
   const insp = h('div', { class: 'pane', id: 'inspector' });
@@ -204,10 +205,74 @@ async function doImport(channel) {
 /* ---------- despachador de vistas ---------- */
 function drawClips(grid) {
   const L = state.lib; if (!grid) return;
-  grid.className = L.mode === 'list' ? 'listwrap' : L.mode === 'folders' ? 'folders' : 'clips';
+  if (L.cmp && L.mode !== 'compare') { L.cmp.pa?.destroy(); L.cmp.pb?.destroy(); L.cmp = null; } // al salir de Comparar se liberan los reproductores
+  grid.className = L.mode === 'list' ? 'listwrap' : L.mode === 'folders' ? 'folders' : L.mode === 'compare' ? 'cmpwrap' : 'clips';
   if (L.mode === 'list') return drawList(grid);
   if (L.mode === 'folders') return drawFolders(grid);
+  if (L.mode === 'compare') return drawCompare(grid);
   return drawGrid(grid);
+}
+
+/* ---------- comparar dentro de la biblioteca: cuadricula o cortina con los dos clips seleccionados ---------- */
+async function drawCompare(host) {
+  const L = state.lib; const videos = L.clips.filter((c) => c.kind === 'video');
+  L.cmpOpt = L.cmpOpt || { mode: 'grid', wipe: 50 };
+  const chosen = videos.filter((c) => L.sel.has(c.id));
+  if (videos.length < 2) return host.replaceChildren(h('div', { class: 'empty' }, 'Hacen falta al menos dos clips de vídeo en esta carpeta para compararlos.'));
+  if (chosen.length < 2) { // si no hay dos seleccionados, se toman los dos primeros y se marcan
+    L.sel = new Set([...chosen.map((c) => c.id), ...videos.filter((c) => !L.sel.has(c.id)).slice(0, 2 - chosen.length).map((c) => c.id)]);
+    chosen.splice(0, chosen.length, ...videos.filter((c) => L.sel.has(c.id)));
+  }
+  const [ca, cb] = chosen; const opt = L.cmpOpt;
+  const pick = (cur, other, setter) => h('select', { 'aria-label': 'Clip a comparar', onchange: (e) => { setter(e.target.value); L.sel = new Set([L.cmpA, L.cmpB]); drawClips($('#clipGrid')); drawInspector(); } },
+    ...videos.map((c) => h('option', { value: c.id, selected: c.id === cur.id, disabled: c.id === other.id }, c.name)));
+  L.cmpA = ca.id; L.cmpB = cb.id;
+  host.replaceChildren(h('div', { class: 'mut' }, 'Preparando…'));
+  L.cmp?.pa?.destroy(); L.cmp?.pb?.destroy();
+  const hostA = h('div'), hostB = h('div');
+  const mk = async (el, c) => { const s = await api.invoke('playback:source', c.id); const p = new CinePlayer(el, { fps: c.meta?.fps }); p.controls.style.display = 'none'; p.load(s.url); p.setLook(c.look); p.setTransform(c.transform || {}); if (c.look?.lut) p.setLut(await api.invoke('lut:read', c.look.lut)); return p; };
+  let pa, pb;
+  try { [pa, pb] = await Promise.all([mk(hostA, ca), mk(hostB, cb)]); } catch (e) { return host.replaceChildren(h('div', { class: 'bad' }, 'No se pudo preparar la comparación: ' + errText(e))); }
+  if (L.mode !== 'compare') { pa.destroy(); pb.destroy(); return; }
+  L.cmp = { pa, pb };
+  const stage = h('div', {});
+  if (opt.mode === 'grid') stage.append(h('div', { class: 'cmpgrid' }, h('div', {}, hostA, h('div', { class: 'mut' }, 'A · ' + ca.name)), h('div', {}, hostB, h('div', { class: 'mut' }, 'B · ' + cb.name))));
+  else {
+    const wrap = h('div', { style: 'position:relative' }); hostB.style.cssText = `position:absolute;inset:0;clip-path:inset(0 0 0 ${opt.wipe}%)`;
+    const line = h('div', { style: `position:absolute;top:0;bottom:0;left:${opt.wipe}%;width:2px;background:#ffd33d;pointer-events:none` });
+    wrap.append(hostA, hostB, line);
+    stage.append(wrap, h('input', { type: 'range', min: 0, max: 100, value: opt.wipe, 'aria-label': 'Posición de la cortina', style: 'width:100%;margin-top:6px;accent-color:#ffd33d', oninput: (e) => { opt.wipe = e.target.value; hostB.style.clipPath = `inset(0 0 0 ${opt.wipe}%)`; line.style.left = opt.wipe + '%'; } }), h('div', { class: 'mut' }, `A · ${ca.name}   |   B · ${cb.name}`));
+  }
+  pa.video.muted = false; pb.video.muted = true;
+  const seek = h('input', { type: 'range', min: 0, max: 1000, value: 0, 'aria-label': 'Posición', style: 'flex:1;accent-color:#4c8dff', oninput: (e) => { const d = Math.min(pa.video.duration || 0, pb.video.duration || 0); pa.video.currentTime = pb.video.currentTime = (e.target.value / 1000) * d; } });
+  pa.video.addEventListener('timeupdate', () => { if (pa.video.duration) seek.value = (pa.video.currentTime / pa.video.duration) * 1000; if (Math.abs(pb.video.currentTime - pa.video.currentTime) > 0.15) pb.video.currentTime = pa.video.currentTime; });
+  host.replaceChildren(h('div', { class: 'row', style: 'margin-bottom:8px' },
+    h('label', { class: 'f' }, 'A', pick(ca, cb, (v) => (L.cmpA = v))), h('label', { class: 'f' }, 'B', pick(cb, ca, (v) => (L.cmpB = v))),
+    h('label', { class: 'f' }, 'Modo', h('select', { onchange: (e) => { opt.mode = e.target.value; drawClips($('#clipGrid')); } }, h('option', { value: 'grid', selected: opt.mode === 'grid' }, 'Cuadrícula'), h('option', { value: 'wipe', selected: opt.mode === 'wipe' }, 'Cortina')))),
+    stage, h('div', { class: 'row', style: 'margin-top:8px;flex-wrap:nowrap' }, h('button', { class: 'btn', onclick: () => { if (pa.video.paused) { pa.video.play(); pb.video.play(); } else { pa.video.pause(); pb.video.pause(); } } }, '▶ / ⏸'), seek));
+}
+
+/* ---------- LUT en bloque: seleccion, carpeta o todo; despues se ajusta cada clip ---------- */
+async function lutDialog() {
+  const L = state.lib; const nSel = L.sel.size; const bin = L.bin ? L.bins.find((b) => b.id === L.bin) : null;
+  const opts = [...(nSel ? [['sel', `Los ${nSel} clips seleccionados`]] : []), ...(bin ? [['bin', `La carpeta «${bin.name}» (con sus subcarpetas, ${bin.count} clips)`]] : []), ['all', 'Toda la biblioteca']];
+  let lut = ''; let scope = opts[0][0]; let order = 'lut-first';
+  const dlg = h('dialog', { class: 'pform' });
+  const lutLine = h('div', { class: 'mono mut' }, 'Ninguna LUT elegida');
+  const apply = async (remove) => {
+    if (!remove && !lut) { toast('Elige primero una LUT .cube'); return; }
+    const target = scope === 'sel' ? { ids: [...L.sel] } : scope === 'bin' ? { bin: L.bin } : {};
+    try { const n = await api.invoke('look:applyLut', target, remove ? null : lut); dlg.close(); dlg.remove(); toast(remove ? `LUT quitada de ${n} clips` : `LUT aplicada a ${n} clips. Selecciona un clip para ajustar su color.`); state.playerClipId = null; render(); }
+    catch (e) { toast('Error: ' + errText(e)); }
+  };
+  dlg.append(h('div', { class: 'col', style: 'gap:12px' }, h('b', { style: 'font-size:15px' }, 'Aplicar una LUT'),
+    h('div', { class: 'mut' }, 'La LUT se aplica como base. El ajuste de color de cada clip (CDL) se conserva y se aplica encima, y se puede retocar clip a clip desde «Color y transformación».'),
+    h('div', { class: 'col' }, ...opts.map(([v, l]) => h('label', { class: 'chip', style: 'align-self:flex-start' }, h('input', { type: 'radio', name: 'lutscope', checked: v === scope, onchange: () => (scope = v) }), l))),
+    h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn', onclick: async () => { const p = await api.invoke('dialog:file', [{ name: 'LUT 3D', extensions: ['cube'] }]); if (p) { lut = p; lutLine.textContent = p.split(/[\\/]/).pop(); lutLine.title = p; } } }, 'Elegir LUT .cube…'), lutLine),
+    h('div', { class: 'row', style: 'justify-content:space-between' }, h('button', { type: 'button', class: 'btn danger', onclick: () => apply(true) }, 'Quitar LUT'),
+      h('span', { class: 'row' }, h('button', { type: 'button', class: 'btn', onclick: () => { dlg.close(); dlg.remove(); } }, 'Cancelar'), h('button', { type: 'button', class: 'btn primary', onclick: () => apply(false) }, 'Aplicar')))));
+  dlg.addEventListener('cancel', () => dlg.remove());
+  document.body.append(dlg); dlg.showModal();
 }
 
 /* vista carpetas: cuantos clips, tamano y tipos de cada carpeta */

@@ -2,16 +2,18 @@
 /* Reproductor WebGL2: CDL + LUT 3D en tiempo real, color falso, zebra, clipping, peaking, scopes y lineas de encuadre. */
 const FRAG = `#version 300 es
 precision highp float; precision highp sampler3D;
-uniform sampler2D uTex; uniform sampler3D uLut; uniform float uLutSize; uniform bool uUseLut;
+uniform sampler2D uTex; uniform sampler3D uLut; uniform float uLutSize; uniform bool uUseLut; uniform int uLutFirst;
 uniform vec3 uSlope, uOffset, uPower; uniform float uSat; uniform vec2 uTexel; uniform float uTime;
 uniform int uFalse, uZebra, uClip, uPeak;
 in vec2 vUv; out vec4 o;
 float luma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+vec3 grade(vec3 c){ c = pow(clamp(c * uSlope + uOffset, 0.0, 1.0), uPower); float l0 = luma(c); return clamp(vec3(l0) + (c - vec3(l0)) * uSat, 0.0, 1.0); }
+vec3 lutf(vec3 c){ return texture(uLut, clamp(c, 0.0, 1.0) * ((uLutSize - 1.0) / uLutSize) + 0.5 / uLutSize).rgb; }
 void main(){
   vec3 c = texture(uTex, vUv).rgb;
-  c = pow(clamp(c * uSlope + uOffset, 0.0, 1.0), uPower);
-  float l0 = luma(c); c = clamp(vec3(l0) + (c - vec3(l0)) * uSat, 0.0, 1.0);
-  if (uUseLut) c = texture(uLut, c * ((uLutSize - 1.0) / uLutSize) + 0.5 / uLutSize).rgb;
+  if (uLutFirst == 1 && uUseLut) c = lutf(c);
+  c = grade(c);
+  if (uLutFirst == 0 && uUseLut) c = lutf(c);
   float y = luma(c);
   if (uPeak == 1) {
     float g = abs(luma(texture(uTex, vUv + vec2(uTexel.x, 0.)).rgb) - luma(texture(uTex, vUv - vec2(uTexel.x, 0.)).rgb))
@@ -114,7 +116,7 @@ class CinePlayer {
     if (k && !(e.target.tagName === 'INPUT' && e.key === ' ')) { e.preventDefault(); k(); }
   }
 
-  setLook(look) { this.look = { cdl: look?.cdl || this.look.cdl, lut: look?.lut || null }; this.draw(); }
+  setLook(look) { this.look = { cdl: look?.cdl || this.look.cdl, lut: look?.lut || null, order: look?.order || 'lut-first' }; this.draw(); }
   async setLut(lutData) { // {size, data(Float32Array rgb)} o null
     const gl = this.gl; this.lutSize = 0; if (!gl || !lutData) { this.useLut = false; return this.draw(); }
     const n = lutData.size, rgba = new Uint8Array(n * n * n * 4);
@@ -144,7 +146,7 @@ class CinePlayer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v);
     const c = this.look.cdl, u = this.u;
     gl.uniform3fv(u('uSlope'), c.slope); gl.uniform3fv(u('uOffset'), c.offset); gl.uniform3fv(u('uPower'), c.power); gl.uniform1f(u('uSat'), c.sat);
-    gl.uniform1i(u('uUseLut'), this.useLut ? 1 : 0); gl.uniform1f(u('uLutSize'), this.lutSize || 2);
+    gl.uniform1i(u('uUseLut'), this.useLut ? 1 : 0); gl.uniform1i(u('uLutFirst'), this.look.order === 'cdl-first' ? 0 : 1); gl.uniform1f(u('uLutSize'), this.lutSize || 2);
     gl.uniform2f(u('uTexel'), 1 / this.canvas.width, 1 / this.canvas.height); gl.uniform1f(u('uTime'), v.currentTime);
     gl.uniform1i(u('uFalse'), this.fx.false); gl.uniform1i(u('uZebra'), this.fx.zebra); gl.uniform1i(u('uClip'), this.fx.clip); gl.uniform1i(u('uPeak'), this.fx.peak);
     gl.drawArrays(gl.TRIANGLES, 0, 3);

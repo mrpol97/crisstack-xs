@@ -18,6 +18,7 @@ function expand(template, ctx = {}) {
     dd: pad(now.getDate()),
     time: `${pad(now.getHours())}${pad(now.getMinutes())}`,
     counter: pad(ctx.counter ?? 1, 3),
+    type: ctx.type === 'sound' ? 'Sonido' : 'Camara',
   };
   return template.replace(/\{(\w+)(?::(\d+))?\}/g, (m, k, w) => {
     if (!(k in vars)) return m;

@@ -32,11 +32,11 @@
 
 <div class="cover">
   <h1>CrisStack XS</h1>
-  <div class="sub">Guía rápida de uso · versión 0.3</div>
+  <div class="sub">Guía rápida de uso · versión 0.4</div>
   <span class="tag">Offload verificado</span><span class="tag">Biblioteca</span><span class="tag">Color</span><span class="tag">Informes</span><span class="tag">Transcodificación</span>
 </div>
 
-<p>CrisStack XS es una herramienta de DIT / gestión de datos de rodaje: copia las tarjetas de cámara a varios destinos comprobando cada fichero con un checksum, ordena el material en una biblioteca con sus metadatos, permite revisarlo con el look aplicado, genera informes y prepara las copias de trabajo.</p>
+<p>CrisStack XS es una herramienta de DIT / gestión de datos de rodaje: copia las tarjetas de cámara y de sonido a varios destinos comprobando cada fichero con un checksum, ordena el material en una biblioteca con sus metadatos, permite revisarlo con el look aplicado, genera informes y prepara las copias de trabajo.</p>
 
 <h2>1. Primeros pasos: crear el proyecto</h2>
 <p>Todo cuelga de un <b>proyecto</b>. Su ficha se rellena una vez y se reutiliza en el offload, en la lista MHL y en la cabecera de los informes.</p>
@@ -48,70 +48,105 @@
 <figure><img src="img/n0-proyecto.png" alt="Formulario de nuevo proyecto"><figcaption>Ficha del proyecto.</figcaption></figure>
 <div class="note ok"><b>Puedes cambiarlo siempre:</b> en la biblioteca, el panel de la izquierda muestra el proyecto con un botón <b>Editar</b>. Los cambios se reflejan al momento en el offload y en los informes nuevos.</div>
 
-<h2 class="pb">2. Meter material: Offload o Importar</h2>
-<h3>Offload (copiar una tarjeta)</h3>
+<h2 class="pb">2. Offload: copiar tarjetas y ficheros</h2>
+<h3>Qué copiar</h3>
+<ul>
+  <li><b>Añadir carpeta…</b> para una tarjeta o carpeta entera y <b>Añadir ficheros sueltos…</b> para copiar solo los ficheros que elijas. Los sueltos se copian juntos en una carpeta con el nombre de la carpeta de la que vienen.</li>
+  <li>A cada origen le indicas si es de <b>Cámara</b> o de <b>Sonido</b>. Así, con las plantillas por defecto, el Día 1 queda ordenado con su carpeta de cámara y su carpeta de sonido:</li>
+</ul>
+<table>
+  <tr><th>Origen</th><th>Carpeta resultante en el destino</th></tr>
+  <tr><td>Tarjeta A001 (cámara A)</td><td><code>Mi Peli/Dia_01/Camara_A/A001</code></td></tr>
+  <tr><td>Tarjeta de sonido SD001</td><td><code>Mi Peli/Dia_01/Sonido/SD001</code></td></tr>
+</table>
+<p>Las plantillas de cámara y de sonido se pueden cambiar con comodines (<code>{project} {day} {camera} {type} {reel} {date}</code>…); debajo ves un ejemplo de cómo quedará.</p>
+<h3>Destinos, verificación y post-pasos</h3>
 <ol>
-  <li>Abre <b>Offload</b> en la barra superior.</li>
-  <li>Añade el <b>origen</b> (la tarjeta o carpeta) y uno o más <b>destinos</b>. Con varios destinos se hace backup redundante a la vez.</li>
-  <li>El <b>proyecto</b> sale enlazado automáticamente. Indica cámara y día de rodaje.</li>
-  <li>Elige la estructura de carpetas con comodines, por ejemplo <code>{project}/Dia_{day}/{camera}_{reel}</code>. El ejemplo debajo te muestra cómo quedará.</li>
-  <li>Marca los hashes (XXH64 recomendado), «Releer y verificar destinos» y «Escribir lista MHL». Opcionalmente un informe y una transcodificación al terminar.</li>
-  <li>Pulsa <b>Iniciar offload</b>. Cada fichero se lee una vez, se escribe en todos los destinos y después se vuelve a leer cada copia para compararla con el original.</li>
+  <li>Añade uno o más <b>destinos</b>. Con varios se hace backup redundante a la vez.</li>
+  <li>Marca los hashes (XXH64 recomendado), «Releer y verificar destinos», la lista MHL y, si quieres, el sellado ASC MHL.</li>
+  <li><b>Informes al terminar:</b> marca <b>todos los que quieras</b>; se generan uno detrás de otro con los clips de esa copia.</li>
+  <li><b>Transcodificar al terminar:</b> al activarlo aparecen las opciones (ver apartado 5).</li>
 </ol>
-<figure><img src="img/v-offload.png" alt="Offload con proyecto enlazado"><figcaption>Offload: el proyecto activo aparece enlazado, con su equipo.</figcaption></figure>
-<h3>Importar (material que ya tienes en disco)</h3>
-<p>En la biblioteca pulsa <b>Importar carpetas…</b> (o <b>Ficheros…</b>). No copia nada: registra los ficheros en la biblioteca <b>conservando la estructura de carpetas</b> original. Si importas dos veces la misma carpeta, no se duplican los clips.</p>
+<h3>Mientras copia</h3>
+<p>Cada tarjeta tiene su propia ficha con los pasos (copiar y verificar → lista MHL → registrar en la biblioteca → informes → transcodificar) y, mientras trabaja, te dice <b>qué fichero está tratando</b>, <b>en qué paso</b> («Copiando a 2 destinos», «Verificando destino 1 de 2»), cuántos MB lleva, la velocidad y <b>cuánto tiempo falta</b> aproximadamente. Lo que está copiándose sale arriba y el resumen también aparece en la barra inferior.</p>
+<figure><img src="img/p5-progreso-en-vivo.png" alt="Progreso en vivo"><figcaption>Copia en curso: fichero actual, paso, velocidad y tiempo restante.</figcaption></figure>
+<h3>Al terminar</h3>
+<p>La ficha indica el tiempo total y el tamaño, y deja botones de <b>acceso rápido</b> para abrir en el Finder cada carpeta donde se han guardado las cosas: la copia en cada destino, los informes y los transcodes.</p>
+<figure><img src="img/p1-offload-progreso.png" alt="Offload terminado"><figcaption>Tarjetas terminadas, con los pasos cumplidos y botones para abrir las carpetas.</figcaption></figure>
+<div class="note ok"><b>Importar sin copiar:</b> si el material ya está en disco, usa <b>Importar carpetas…</b> o <b>Ficheros…</b> en la biblioteca. Registra los ficheros conservando su estructura de carpetas y no se duplican si repites la importación.</div>
 
 <h2 class="pb">3. La biblioteca</h2>
 <h3>Árbol de carpetas</h3>
-<p>A la izquierda ves todo el material como un árbol de carpetas (proyecto → día → cámara → tarjeta…). Haz clic en una carpeta para ver sus clips, incluidos los de las subcarpetas. La flecha ▾ plega y despliega.</p>
-<h3>Tres vistas</h3>
+<p>A la izquierda ves todo el material como un árbol de carpetas (proyecto → día → cámara/sonido → tarjeta…). Haz clic en una carpeta para ver sus clips, incluidos los de las subcarpetas.</p>
+<h3>Cuatro vistas</h3>
 <table>
   <tr><th>Vista</th><th>Para qué sirve</th></tr>
   <tr><td><b>Lista</b></td><td>Tabla con todas las columnas de metadatos. Se ordena haciendo clic en la cabecera.</td></tr>
   <tr><td><b>Miniaturas</b></td><td>Cuadrícula de miniaturas para revisar rápido. Doble clic para reproducir.</td></tr>
-  <tr><td><b>Carpetas</b></td><td>Resumen por carpeta: cuántos clips tiene, tamaño total, y cuántos son vídeo, audio o imágenes, más la duración. Clic en una tarjeta para entrar.</td></tr>
+  <tr><td><b>Carpetas</b></td><td>Resumen por carpeta: cuántos clips tiene, tamaño total, y cuántos son vídeo, audio o imágenes, más la duración.</td></tr>
+  <tr><td><b>Comparar</b></td><td>Los dos clips seleccionados, en cuadrícula o con cortina, con su look aplicado y sincronizados.</td></tr>
 </table>
 <figure><img src="img/n1-lista.png" alt="Vista lista"><figcaption>Vista lista con árbol de carpetas, flags, valoración y vista previa.</figcaption></figure>
 <figure><img src="img/n2-carpetas.png" alt="Vista carpetas"><figcaption>Vista de carpetas: clips, tamaño y tipos de cada una.</figcaption></figure>
+<figure><img src="img/p2-comparar-biblioteca.png" alt="Comparar"><figcaption>Comparar dos clips dentro de la biblioteca.</figcaption></figure>
 
 <h3 class="pb">Columnas de la lista</h3>
-<p>Pulsa <b>Columnas…</b> para elegir cuáles ver. Disponibles: flag (marca, incluido <i>circled</i>), rating, preview, nombre, duración, frames, cámara, ISO, WB, shutter, shutter angle, sensor FPS, filtro ND, FPS del proyecto, modelo de lente, códec, tipo de fichero, resolución, fecha de registro, formato de TC, TC inicio, TC final, ShotID, reel/tape, fecha de grabación, fabricante, pistas de audio, tamaño, información de look, Camera T, ISO nativo, espacio de color RAW, códec de audio, volúmenes, backups, escena, plano, toma y notas.</p>
+<p>Pulsa <b>Columnas…</b> para elegir cuáles ver: flag (incluido <i>circled</i>), rating, preview, nombre, duración, frames, cámara, ISO, WB, shutter, shutter angle, sensor FPS, filtro ND, FPS del proyecto, modelo de lente, códec, tipo de fichero, resolución, fecha de registro, formato de TC, TC inicio y final, ShotID, reel/tape, fecha de grabación, fabricante, pistas y códec de audio, tamaño, información de look, Camera T, ISO nativo, espacio de color RAW, volúmenes, backups, escena, plano, toma y notas.</p>
 <ul>
-  <li><b>Editar una celda:</b> doble clic en una celda subrayada al pasar el ratón, escribe y pulsa <kbd>Enter</kbd>. Los datos de cámara (ISO, WB, shutter, lente…) se rellenan solos cuando el fichero los trae; si no, los escribes tú.</li>
-  <li><b>Añadir más celdas:</b> en <b>Columnas…</b> escribe el nombre de una columna nueva y pulsa <b>Añadir columna</b>. Se puede editar en la lista y viaja con la exportación.</li>
-  <li><b>Exportar metadatos:</b> el botón <b>CSV</b> exporta las columnas que tengas visibles (de los clips seleccionados, o de todos). La exportación Avid ALE incluye también ISO, WB, shutter, lente y tus columnas propias.</li>
+  <li><b>Editar una celda:</b> doble clic en una celda subrayada al pasar el ratón, escribe y pulsa <kbd>Enter</kbd>. Los datos de cámara se rellenan solos cuando el fichero los trae; si no, los escribes tú.</li>
+  <li><b>Añadir más columnas:</b> en <b>Columnas…</b> escribe el nombre de una nueva y pulsa <b>Añadir columna</b>. Se edita en la lista y viaja con la exportación.</li>
+  <li><b>Exportar metadatos:</b> el botón <b>CSV</b> exporta las columnas visibles (de los clips seleccionados, o de todos). El ALE de Avid incluye también ISO, WB, shutter, lente y tus columnas propias.</li>
 </ul>
-<div class="note">Los datos «Backups» y «Volúmenes» se rellenan en los clips que entran por Offload (cuántas copias verificadas hay y de qué tarjeta vienen). En los importados, Backups es 0.</div>
 
-<h2 class="pb">4. Revisar: reproducción, color y QC</h2>
-<p>Doble clic en un clip para reproducirlo en el panel derecho. Debajo del reproductor tienes:</p>
-<ul>
-  <li><b>Color falso, Zebra, Clipping y Peaking</b> para exposición y foco.</li>
-  <li><b>Líneas de encuadre</b> (2.39, 2:1, 1.85, 16:9, 4:3, 1:1, 9:16) y <b>Scopes</b> (waveform, histograma, vectorscopio).</li>
-  <li><b>Fotograma</b> guarda un still con el look aplicado; <b>Miniatura</b> usa el fotograma actual como miniatura del clip.</li>
-</ul>
-<p>En la sección <b>Color y transformación</b> del inspector ajustas CDL (slope, offset, power, saturación), cargas una LUT <code>.cube</code>, copias y pegas looks entre clips y los guardas en la biblioteca. También desqueeze, espejo, rotación y recorte. El botón <b>QC</b> de la barra superior da más espacio al reproductor.</p>
+<h2 class="pb">4. Revisar: reproducción y color</h2>
+<p>Doble clic en un clip para reproducirlo en el panel derecho. Debajo del reproductor tienes color falso, zebra, clipping y peaking, líneas de encuadre, scopes (waveform, histograma, vectorscopio), un botón para guardar un still con el look aplicado y otro para usar el fotograma actual como miniatura. El botón <b>QC</b> de la barra superior da más espacio al reproductor.</p>
 <figure><img src="img/3b-player-fx.png" alt="Reproductor"><figcaption>Reproductor con color falso, scopes y líneas de encuadre.</figcaption></figure>
+<h3>Una LUT para muchos clips y un ajuste fino en cada uno</h3>
+<ol>
+  <li>En la biblioteca pulsa <b>LUT…</b>, elige la LUT <code>.cube</code> y dónde se aplica: <b>los clips seleccionados</b>, <b>una carpeta entera</b> (con sus subcarpetas) o <b>toda la biblioteca</b>.</li>
+  <li>Después selecciona un clip y, en <b>Color y transformación</b> del inspector, retoca su color con slope, offset, power y saturación. La LUT es la base y tu ajuste se aplica encima.</li>
+  <li>Si prefieres lo contrario (ajustar antes de la LUT) cambia el <b>Orden de aplicación</b> en ese mismo panel.</li>
+</ol>
+<p>El look de cada clip (LUT + ajuste) se usa también al transcodificar y al guardar stills. Puedes copiar y pegar looks entre clips, guardarlos en la biblioteca e importar o exportar CDL.</p>
 
 <h2 class="pb">5. Transcodificar</h2>
-<ol>
-  <li>Selecciona uno o varios clips en la biblioteca y abre <b>Transcodificar</b> (si no seleccionas ninguno, se usan todos los de vídeo).</li>
-  <li>Elige el preset (ProRes, DNxHR, H.264, H.265), la altura opcional, LUT, timecode o nombre quemados, y si se aplican los looks de cada clip.</li>
-  <li>Pulsa <b>Iniciar</b>. El progreso se ve en la barra inferior.</li>
-</ol>
-<p>El resultado se registra automáticamente en la carpeta <b>Transcodes</b> de la biblioteca, con su información y tamaño reales. Al terminar, la pantalla muestra una tabla por clip: <span style="color:#146c3a"><b>Correcto</b></span> con el tamaño y la ruta, o el motivo exacto del error. Un fichero solo se da por bueno si ffmpeg termina y tiene contenido; nunca queda un clip vacío. Los errores se guardan además en <code>transcode.log</code>.</p>
-<figure><img src="img/n5-transcode.png" alt="Transcodificar"><figcaption>Transcodificación con tabla de resultados.</figcaption></figure>
+<p>Selecciona clips en la biblioteca y abre <b>Transcodificar</b> (si no seleccionas ninguno se usan todos los de vídeo). La misma pantalla de ajustes aparece en el Offload cuando marcas «Transcodificar al terminar».</p>
+<table>
+  <tr><th>Ajuste</th><th>Qué hace</th></tr>
+  <tr><td>Formato</td><td>ProRes Proxy/422/HQ, DNxHR LB/SQ, H.264 o H.265.</td></tr>
+  <tr><td>Píxeles</td><td>Tamaño de salida: original, 2160, 1440, 1080, 720, 540, 360 o una altura personalizada.</td></tr>
+  <tr><td>LUT</td><td>LUT extra para esta salida (además del look de cada clip).</td></tr>
+  <tr><td>Timecode quemado · Nombre del clip quemado · Texto libre</td><td>Se imprimen sobre la imagen. El texto libre admite posición y tamaño.</td></tr>
+  <tr><td>Aplicar looks y transformaciones</td><td>Usa la LUT, el ajuste de color y el recorte/giro de cada clip.</td></tr>
+  <tr><td>Conservar el timecode</td><td>El fichero resultante mantiene el TC del original.</td></tr>
+  <tr><td>Subir a S3</td><td>Sube los resultados al bucket de Ajustes, con un prefijo opcional.</td></tr>
+  <tr><td>Carpeta de salida</td><td>Dónde se guardan los transcodes.</td></tr>
+  <tr><td><b>Ajustes de transcode · metadatos</b></td><td>Marcas qué datos viajan dentro del fichero: proyecto, productora, director, DIT, copyright, escena, plano, toma, cámara, reel, ShotID, notas, ISO, WB, lente… y tus columnas propias.</td></tr>
+</table>
+<h3>Previsualización</h3>
+<p>A la derecha ves <b>cómo va a quedar</b> un fotograma con todos los ajustes puestos (LUT, looks, recorte, tamaño y los textos quemados). Elige el clip y el momento, y pulsa <b>Actualizar previsualización</b>; una vez generada, se actualiza sola al cambiar los ajustes.</p>
+<figure><img src="img/p4-transcode-ajustes.png" alt="Ajustes de transcode"><figcaption>Ajustes de transcode, metadatos y previsualización.</figcaption></figure>
+<p>El resultado se registra en la carpeta <b>Transcodes</b> de la biblioteca con su información y tamaño reales, y una tabla por clip muestra «Correcto» o el motivo exacto del error. Un fichero solo se da por bueno si ffmpeg termina y tiene contenido. Los errores quedan además en <code>transcode.log</code>.</p>
 
-<h2 class="pb">6. Informes e intercambio</h2>
+<h2 class="pb">6. Informes</h2>
+<p>En <b>Informes</b> puedes crear <b>todos los que necesites</b>. Cada uno es una configuración guardada: nombre, tipo (volumen/checksums, día de rodaje, lista de clips, miniaturas, contact print), formato PDF o HTML, tema claro u oscuro, título propio, qué clips incluye (toda la biblioteca, la selección, o los de cada offload) y, en la lista de clips, <b>qué columnas</b> salen (también las tuyas).</p>
 <ul>
-  <li><b>Informes</b> (PDF o HTML): día de rodaje, clips, miniaturas, contact print y volumen/checksums. La cabecera lleva el logo, la productora, el equipo y, al pie, el copyright del proyecto.</li>
-  <li><b>Intercambio:</b> exporta a Avid ALE, Premiere/FCP7 XML, FCPXML (Final Cut Pro X y Resolve), CDL (.ccc), EDL y CSV; e importa hojas de rodaje en CSV o ALE emparejando por nombre, timecode o escena/plano/toma.</li>
+  <li><b>Nuevo informe</b>, <b>Guardar</b>, <b>Guardar como nuevo</b> (duplicar), <b>Generar ahora</b> y <b>Eliminar</b>.</li>
+  <li>Marca varios y pulsa <b>Generar seleccionados</b> para crearlos de una vez.</li>
+  <li><b>Exportar configuración…</b> guarda las configuraciones en un fichero para llevarlas a otro equipo o proyecto; <b>Importar configuración…</b> las recupera.</li>
+  <li>En el Offload eliges cuáles se generan al terminar la copia.</li>
+</ul>
+<figure><img src="img/p3-informes.png" alt="Informes"><figcaption>Varias configuraciones de informe guardadas.</figcaption></figure>
+<p>La cabecera de cada informe lleva el logo, la productora y el equipo del proyecto; al pie, el copyright.</p>
+
+<h2>7. Otras herramientas</h2>
+<ul>
+  <li><b>Intercambio:</b> exporta a Avid ALE, Premiere/FCP7 XML, FCPXML (Final Cut Pro X y Resolve), CDL (.ccc), EDL y CSV; importa hojas de rodaje en CSV o ALE emparejando por nombre, timecode o escena/plano/toma.</li>
   <li><b>Archivo:</b> sellado ASC MHL con historial, relink de ficheros movidos, detección de secuencias de imagen y subida a S3.</li>
   <li><b>Verificar:</b> comprueba una carpeta ya copiada contra su lista MHL.</li>
 </ul>
 
-<h2>7. Atajos de teclado</h2>
+<h2>8. Atajos de teclado</h2>
 <table>
   <tr><th>Tecla</th><th>Acción</th></tr>
   <tr><td><kbd>G</kbd> <kbd>B</kbd> <kbd>H</kbd> <kbd>0</kbd></td><td>Marcar bueno, malo, pendiente o quitar marca (en la selección)</td></tr>
@@ -124,13 +159,13 @@
 </table>
 <p>Los atajos de la biblioteca se pueden cambiar en <b>Ajustes → Atajos de teclado</b>.</p>
 
-<h2>8. Si algo no va bien</h2>
+<h2>9. Si algo no va bien</h2>
 <table>
   <tr><th>Síntoma</th><th>Qué hacer</th></tr>
   <tr><td>macOS dice que la app «está dañada» o no deja abrirla</td><td>Clic derecho → <b>Abrir</b>. Si persiste, en Terminal: <code>xattr -cr "/Applications/CrisStack XS.app"</code> (la app no está firmada con certificado de Apple).</td></tr>
-  <tr><td>Un clip no se transcodifica</td><td>Mira la tabla de «Último resultado» en <b>Transcodificar</b>: indica el motivo (fichero original no encontrado, no es vídeo, error de ffmpeg…). Si falta el original, usa <b>Archivo → Relink</b>.</td></tr>
+  <tr><td>Un clip no se transcodifica</td><td>Mira la tabla «Último resultado» en <b>Transcodificar</b>: indica el motivo (fichero original no encontrado, no es vídeo, error de ffmpeg…). Si falta el original, usa <b>Archivo → Relink</b>.</td></tr>
   <tr><td>ISO, WB o lente salen vacíos</td><td>Esos datos solo aparecen si el fichero los incluye. Escríbelos a mano en la lista (doble clic).</td></tr>
-  <tr><td>Un offload termina con fallos de verificación</td><td>Revisa la pestaña <b>Trabajos</b> y repite la copia del fichero afectado: el fallo indica que la copia no coincide con el original.</td></tr>
+  <tr><td>Un offload termina con fallos de verificación</td><td>Revisa <b>Trabajos</b> y repite la copia del fichero afectado: el fallo indica que la copia no coincide con el original.</td></tr>
 </table>
 
 <div class="note"><b>Limitaciones conocidas:</b> sin salida SDI ni LTFS; las subidas a Frame.io, Sony Ci, Webgate y COPRA no están disponibles; los datos de cámara se leen de los metadatos que ffprobe encuentra y no de los formatos RAW propietarios.</div>

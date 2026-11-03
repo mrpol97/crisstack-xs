@@ -73,4 +73,25 @@ async function relink(clips, roots, { algo = 'xxh64' } = {}) {
   return { relinked: out, notFound };
 }
 
-module.exports = { notifySlack, jobMessage, postJson, detectSequences, makeRenamer, relink };
+/** Campos de metadatos que se pueden llevar al fichero transcodificado: id -> [clave del contenedor, funcion de lectura]. */
+const META_FIELDS = {
+  project: ['project', (c, i) => i?.name], production: ['production', (c, i) => i?.production], director: ['director', (c, i) => i?.director],
+  cinematographer: ['cinematographer', (c, i) => i?.cinematographer], dit: ['dit', (c, i) => i?.dit], dataManager: ['data_manager', (c, i) => i?.dataManager],
+  copyright: ['copyright', (c, i) => i?.copyright], scene: ['scene', (c) => c.scene], shot: ['shot', (c) => c.shot], take: ['take', (c) => c.take],
+  camera: ['camera', (c) => c.camera], reel: ['reel', (c) => c.reel], shotId: ['shot_id', (c) => c.shotId], notes: ['comment', (c) => c.notes],
+  flag: ['flag', (c) => c.flag], rating: ['rating', (c) => (c.rating ? String(c.rating) : '')],
+  iso: ['iso', (c) => c.cam?.iso ?? c.meta?.camera?.iso], wb: ['white_balance', (c) => c.cam?.wb ?? c.meta?.camera?.wb], lens: ['lens', (c) => c.cam?.lens ?? c.meta?.camera?.lens],
+  shutter: ['shutter', (c) => c.cam?.shutter ?? c.meta?.camera?.shutter],
+};
+/** fields: ids de META_FIELDS o 'custom:<nombre>'. Devuelve {clave: valor} solo con los que tienen valor. */
+function buildClipMetadata(clip, info, fields = []) {
+  const out = { title: clip.name };
+  for (const f of fields) {
+    if (f.startsWith('custom:')) { const n = f.slice(7); const v = clip.custom?.[n]; if (v) out[n] = v; continue; }
+    const def = META_FIELDS[f]; if (!def) continue;
+    const v = def[1](clip, info); if (v !== undefined && v !== null && String(v) !== '') out[def[0]] = v;
+  }
+  return out;
+}
+
+module.exports = { buildClipMetadata, META_FIELDS, notifySlack, jobMessage, postJson, detectSequences, makeRenamer, relink };

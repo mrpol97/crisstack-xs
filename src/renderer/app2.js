@@ -38,50 +38,9 @@ function colorPanel(sel, one) {
       sel1('Espejo', [['', 'Ninguno'], ['h', 'Horizontal'], ['v', 'Vertical'], ['hv', 'Ambos']], tr.flip, (v) => { tr.flip = v || undefined; liveTr(); }),
       sel1('Rotar', [[0, '0°'], [90, '90°'], [180, '180°'], [270, '270°']], tr.rotate || 0, (v) => { tr.rotate = Number(v) || undefined; liveTr(); })),
     h('div', { class: 'row', style: 'margin-top:6px' }, cs('x', 'Crop X'), cs('y', 'Crop Y'), cs('w', 'Ancho'), cs('h', 'Alto')));
+  body.append(h('div', { class: 'row', style: 'margin-top:10px' }, sel1('Orden de aplicación', [['lut-first', 'LUT primero y ajuste del clip encima (recomendado)'], ['cdl-first', 'Ajuste del clip primero y LUT después']], look.order || 'lut-first', (v) => { look.order = v; live(); })));
   return h('details', { style: 'margin-top:12px', open: !!(one?.look || one?.transform) }, h('summary', { style: 'cursor:pointer;color:var(--mut);text-transform:uppercase;letter-spacing:.07em;font-size:12px;font-weight:600' }, 'Color y transformación'), body);
 }
-
-/* ---------- COMPARAR (cuadricula y cortina) ---------- */
-views.compare = async function viewCompare() {
-  const clips = (await api.invoke('library:clips', {})).filter((c) => c.kind === 'video');
-  const st = state.cmp || (state.cmp = { a: clips[0]?.id, b: clips[1]?.id, mode: 'grid', wipe: 50 });
-  main.append(h('h1', {}, 'Comparar'), h('div', { class: 'sub' }, 'Dos clips en cuadrícula o con cortina, con su look aplicado. Los dos se reproducen sincronizados.'));
-  if (clips.length < 2) return main.append(h('div', { class: 'empty' }, 'Necesitas al menos dos clips de vídeo en la biblioteca.'));
-  const pick = (key) => h('select', { onchange: (e) => { st[key] = e.target.value; render(); } }, ...clips.map((c) => h('option', { value: c.id, selected: st[key] === c.id }, c.name)));
-  const stage = h('div', { class: 'card', style: 'padding:8px' }); const hostA = h('div'), hostB = h('div');
-  main.append(h('div', { class: 'row' }, h('label', { class: 'f' }, 'A', pick('a')), h('label', { class: 'f' }, 'B', pick('b')),
-    h('label', { class: 'f' }, 'Modo', h('select', { onchange: (e) => { st.mode = e.target.value; render(); } }, h('option', { value: 'grid', selected: st.mode === 'grid' }, 'Cuadrícula'), h('option', { value: 'wipe', selected: st.mode === 'wipe' }, 'Cortina')))), stage);
-  const ca = clips.find((c) => c.id === st.a), cb = clips.find((c) => c.id === st.b);
-  const mk = async (host, c) => { const s = await api.invoke('playback:source', c.id); const p = new CinePlayer(host, { fps: c.meta?.fps }); p.controls.style.display = 'none'; p.load(s.url); p.setLook(c.look); p.setTransform(c.transform || {}); if (c.look?.lut) p.setLut(await api.invoke('lut:read', c.look.lut)); return p; };
-  stage.append(h('div', { class: 'mut' }, 'Preparando…'));
-  const [pa, pb] = await Promise.all([mk(hostA, ca), mk(hostB, cb)]);
-  if (st.mode === 'grid') stage.replaceChildren(h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:8px' }, h('div', {}, hostA, h('div', { class: 'mut' }, 'A · ' + ca.name)), h('div', {}, hostB, h('div', { class: 'mut' }, 'B · ' + cb.name))));
-  else {
-    const wrap = h('div', { style: 'position:relative' }); hostB.style.cssText = `position:absolute;inset:0;clip-path:inset(0 0 0 ${st.wipe}%)`;
-    const line = h('div', { style: `position:absolute;top:0;bottom:0;left:${st.wipe}%;width:2px;background:#ffd33d;pointer-events:none` });
-    wrap.append(hostA, hostB, line);
-    stage.replaceChildren(wrap, h('input', { type: 'range', min: 0, max: 100, value: st.wipe, style: 'width:100%;margin-top:6px;accent-color:#ffd33d', oninput: (e) => { st.wipe = e.target.value; hostB.style.clipPath = `inset(0 0 0 ${st.wipe}%)`; line.style.left = st.wipe + '%'; } }), h('div', { class: 'mut' }, `A · ${ca.name}   |   B · ${cb.name}`));
-  }
-  [pa, pb].forEach((p) => (p.video.muted = true)); pa.video.muted = false;
-  const seek = h('input', { type: 'range', min: 0, max: 1000, value: 0, style: 'flex:1;accent-color:#4c8dff', oninput: (e) => { const d = Math.min(pa.video.duration || 0, pb.video.duration || 0); pa.video.currentTime = pb.video.currentTime = (e.target.value / 1000) * d; } });
-  pa.video.addEventListener('timeupdate', () => { if (pa.video.duration) seek.value = (pa.video.currentTime / pa.video.duration) * 1000; if (Math.abs(pb.video.currentTime - pa.video.currentTime) > 0.15) pb.video.currentTime = pa.video.currentTime; });
-  stage.append(h('div', { class: 'row', style: 'margin-top:8px;flex-wrap:nowrap' }, h('button', { class: 'btn', onclick: () => { if (pa.video.paused) { pa.video.play(); pb.video.play(); } else { pa.video.pause(); pb.video.pause(); } } }, '▶ / ⏸'), seek));
-};
-
-/* ---------- AUDIO ---------- */
-views.audio = async function viewAudio() {
-  const A = state.audio || (state.audio = { folder: '', files: [], matches: [], method: 'auto', busy: false });
-  const nSel = state.lib.sel.size;
-  main.append(h('h1', {}, 'Audio'), h('div', { class: 'sub' }, 'Sincroniza audio externo con los clips por timecode (BWF) o por forma de onda.'),
-    h('div', { class: 'card col' },
-      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: async () => { const [p] = await api.invoke('dialog:folder', false); if (!p) return; A.folder = p; A.busy = true; render(); A.files = await api.invoke('audio:scan', p); A.matches = []; A.busy = false; render(); } }, 'Carpeta de audio…'), h('span', { class: 'mono mut' }, A.folder ? `${A.folder} · ${A.files.length} ficheros` : 'sin seleccionar')),
-      h('div', { class: 'row' }, h('label', { class: 'f' }, 'Método', h('select', { onchange: (e) => (A.method = e.target.value) }, ...[['auto', 'Automático (timecode y, si no, forma de onda)'], ['timecode', 'Solo timecode'], ['waveform', 'Solo forma de onda']].map(([v, l]) => h('option', { value: v, selected: A.method === v }, l)))),
-        h('span', { class: 'mut' }, nSel ? `${nSel} clips seleccionados en Biblioteca` : 'Se usarán todos los clips de vídeo')),
-      h('div', { class: 'row' }, h('button', { class: 'btn primary', disabled: !A.files.length || A.busy, onclick: async () => { A.busy = true; render(); try { A.matches = await api.invoke('audio:match', [...state.lib.sel], A.files, A.method); } catch (e) { toast('Error: ' + e.message); } A.busy = false; render(); } }, A.busy ? 'Analizando…' : 'Buscar coincidencias'),
-        h('button', { class: 'btn', disabled: !A.matches.length, onclick: async () => { try { const out = await api.invoke('audio:render', A.matches); toast(`${out.length} clips sincronizados`); api.invoke('shell:reveal', out[0]); } catch (e) { toast('Error: ' + e.message); } } }, 'Renderizar sincronizados'))));
-  if (A.matches.length) main.append(h('h2', {}, 'Coincidencias'), h('div', { class: 'card', style: 'padding:0' }, h('table', {}, h('thead', {}, h('tr', {}, ...['Clip', 'Audio', 'Método', 'Desfase', 'Confianza'].map((x) => h('th', {}, x)))),
-    h('tbody', {}, ...A.matches.map((m) => h('tr', {}, h('td', {}, m.clipName), h('td', { class: 'mono' }, m.audio.split(/[\\/]/).pop()), h('td', {}, m.method === 'timecode' ? 'Timecode' : 'Forma de onda'), h('td', {}, `${m.offset.toFixed(2)} s`), h('td', {}, m.confidence != null ? Math.round(m.confidence * 100) + ' %' : '—')))))));
-};
 
 /* ---------- INTERCAMBIO ---------- */
 views.exchange = async function viewExchange() {

@@ -190,7 +190,7 @@ class Library {
       firstBin = firstBin || bin;
       added.push(this.newClip({ rel: f.rel, kind, size: f.size }, bin, {
         path: d.path, hashes: f.hashes, verified: d.status, jobId: job.id, reel: reel || bin.name, camera: camera || '',
-        volume: path.basename((job.sources[0] || '').replace(/[\\/]+$/, '')) || volumeOf(job.sources[0] || ''),
+        volume: job.volume || path.basename((job.sources[0] || '').replace(/[\\/]+$/, '')) || volumeOf(job.sources[0] || ''),
         copies: f.dests.map((x) => ({ path: x.path, status: x.status })),
       }));
     }

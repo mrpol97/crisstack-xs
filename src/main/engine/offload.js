@@ -83,22 +83,31 @@ async function runOffload(opts) {
   const started = new Date();
   const jobFiles = [];
   for (const src of opts.sources) {
+    const st = await fsp.stat(src);
+    if (st.isFile()) { // fichero suelto: se copia a la carpeta del job con su nombre
+      jobFiles.push({ abs: src, rel: path.basename(src), size: st.size, mtime: st.mtimeMs, srcRoot: path.dirname(src), name: opts.folderName || path.basename(path.dirname(src)) });
+      continue;
+    }
     const name = opts.folderName || path.basename(src);
     for (const f of await walk(src)) jobFiles.push({ ...f, srcRoot: src, name });
   }
   const totalBytes = jobFiles.reduce((s, f) => s + f.size, 0);
   const totalWork = totalBytes * (verify ? 1 + opts.destinations.length : 1);
   let done = 0;
-  const emit = (extra = {}) =>
-    opts.onProgress?.({ doneBytes: done, totalBytes: totalWork, files: jobFiles.length, ...extra });
+  const cur = {}; // fase actual: se conserva entre eventos para que la interfaz siempre sepa que fichero y que paso
+  const emit = (extra = {}) => {
+    Object.assign(cur, extra);
+    opts.onProgress?.({ doneBytes: done, totalBytes: totalWork, files: jobFiles.length, destCount: opts.destinations.length, verify, ...cur });
+  };
   const bump = (n) => { done += n; emit(); };
 
   const results = [];
   let failures = 0;
-  for (const f of jobFiles) {
+  for (let fi = 0; fi < jobFiles.length; fi++) {
+    const f = jobFiles[fi];
     const outRel = opts.rename ? opts.rename(f.rel) : f.rel;
     const destPaths = opts.destinations.map((d) => path.join(d, f.name, outRel));
-    emit({ phase: 'copy', current: f.rel });
+    emit({ phase: 'copy', current: f.rel, fileIndex: fi + 1, fileSize: f.size, dest: null });
     const entry = { rel: path.join(f.name, outRel), srcRel: f.rel, size: f.size, mtime: f.mtime, hashes: null, dests: [] };
     try {
       entry.hashes = await copyOne(f, destPaths, algos, bump, opts.signal);
@@ -109,10 +118,11 @@ async function runOffload(opts) {
       results.push(entry);
       continue;
     }
-    for (const dp of destPaths) {
+    for (let di = 0; di < destPaths.length; di++) {
+      const dp = destPaths[di];
       const d = { path: dp, status: 'copied' };
       if (verify) {
-        emit({ phase: 'verify', current: f.rel });
+        emit({ phase: 'verify', current: f.rel, dest: di + 1 });
         try {
           const h = await hashFile(dp, algos, bump, opts.signal);
           const bad = algos.filter((a) => h[a] !== entry.hashes[a]);

@@ -162,3 +162,35 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 
 /* barras de desplazamiento discretas en tema oscuro */
 *{scrollbar-width:thin;scrollbar-color:#3a4150 transparent}
+
+/* ---- v0.4: offload con pasos, ajustes de transcode, informes, comparar ---- */
+.grow{flex:1}
+.item .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.srcitem{gap:10px}.srcitem select{padding:3px 6px;flex:none}.srcitem .ficon{color:var(--acc);flex:none}
+.tcpanel{display:block}
+.tcsum{cursor:pointer;color:var(--fg);font-weight:600;font-size:13px}
+.tcgrid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px;align-items:start}
+@media(max-width:1250px){.tcgrid{grid-template-columns:1fr}}
+.prevbox{min-height:200px;background:#07080a;border:1px solid var(--line);border-radius:8px;display:flex;align-items:center;justify-content:center;margin-top:10px;overflow:hidden;padding:6px;text-align:center}
+.prevbox img{max-width:100%;display:block;border-radius:4px}
+.jobcard .jtitle{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.badge2{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:0 8px;font-size:11px;color:var(--mut)}
+.steps{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.step{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:12px;border:1px solid var(--line);font-size:12px;color:var(--mut);background:var(--bg)}
+.step i{font-style:normal;font-size:11px}
+.step.st-run{color:var(--fg);border-color:var(--acc)}.step.st-run i{color:var(--acc)}
+.step.st-done{color:var(--ok);border-color:#1f5a3c}.step.st-error{color:var(--bad);border-color:#6a2a2a}
+.jdetail{display:flex;flex-direction:column;gap:6px;font-size:12.5px}
+.jdetail .mono{word-break:break-all}
+.folderlinks{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.rgrid{display:grid;grid-template-columns:minmax(220px,300px) minmax(0,1fr);gap:14px;align-items:start}
+@media(max-width:1000px){.rgrid{grid-template-columns:1fr}}
+.rlist{display:flex;flex-direction:column;gap:4px}
+.ritem{display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:8px;border:1px solid transparent}
+.ritem.active{background:var(--panel2);border-color:var(--line)}
+.ritem input{accent-color:var(--acc)}
+.rname{all:unset;cursor:pointer;display:flex;flex-direction:column;flex:1;min-width:0}
+.rname b,.rname span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
+.rname:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:4px}
+.cmpwrap{overflow:auto}
+.cmpgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
