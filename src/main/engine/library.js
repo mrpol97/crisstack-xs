@@ -1,15 +1,18 @@
-// Biblioteca de clips: bins, metadatos, campos personalizados y carpetas inteligentes.
+// Biblioteca: ficha de proyecto, carpetas (bins) en arbol, clips, metadatos, campos personalizados y carpetas inteligentes.
 const path = require('node:path');
 const crypto = require('node:crypto');
 const media = require('./media');
+const { walk } = require('./offload');
 
 const uid = () => crypto.randomBytes(6).toString('hex');
 
-const BASE_FIELDS = ['name', 'bin', 'kind', 'codec', 'width', 'height', 'fps', 'duration', 'size', 'scene', 'shot', 'take', 'camera', 'reel', 'flag', 'rating', 'color', 'notes', 'verified', 'timecode'];
+const PROJECT_FIELDS = ['name', 'director', 'cinematographer', 'cameraAssistant', 'cameraAssistant2', 'dit', 'dataManager', 'soundMixer', 'scriptSupervisor', 'producer', 'production', 'location', 'copyright'];
+const MAX_LOGO = 1.5 * 1024 * 1024;
 
 function fieldValue(clip, field) {
   if (field in clip) return clip[field];
   if (clip.meta && field in clip.meta) return clip.meta[field];
+  if (clip.cam && field in clip.cam) return clip.cam[field];
   if (clip.custom && field in clip.custom) return clip.custom[field];
   return undefined;
 }
@@ -37,58 +40,99 @@ function matchSmart(clip, smart) {
   return smart.match === 'any' ? rules.some((r) => matchRule(clip, r)) : rules.every((r) => matchRule(clip, r));
 }
 
+/** Nombre del volumen de un fichero: /Volumes/XXX en Mac, letra de unidad en Windows. */
+function volumeOf(p) {
+  const m = /^\/Volumes\/([^/]+)/.exec(p.replace(/\\/g, '/'));
+  if (m) return m[1];
+  const root = path.parse(p).root;
+  return root && root !== '/' ? root.replace(/[\\/]+$/, '') : 'Disco interno';
+}
+
 class Library {
   constructor(store, thumbDir) {
     this.store = store;
     this.thumbDir = thumbDir;
-    if (!store.get('clips')) store.set('clips', {});
-    if (!store.get('bins')) store.set('bins', {});
-    if (!store.get('smartFolders')) store.set('smartFolders', []);
-    if (!store.get('customFields')) store.set('customFields', []);
-    if (!store.get('jobs')) store.set('jobs', []);
+    for (const [k, v] of [['clips', {}], ['bins', {}], ['smartFolders', []], ['customFields', []], ['jobs', []]]) if (!store.get(k)) store.set(k, v);
   }
 
   get clips() { return this.store.get('clips'); }
   get bins() { return this.store.get('bins'); }
 
-  listClips({ bin, smartId, search } = {}) {
+  /* ---------- ficha de proyecto ---------- */
+  getProject() { return this.store.get('project') || null; }
+  setProject(info = {}) {
+    const cur = this.getProject() || { created: new Date().toISOString() };
+    const next = { ...cur };
+    for (const k of PROJECT_FIELDS) if (k in info) next[k] = String(info[k] ?? '').trim();
+    if ('logo' in info) {
+      if (info.logo && info.logo.length > MAX_LOGO * 1.4) throw new Error('El logo es demasiado grande (máximo 1,5 MB)');
+      next.logo = info.logo || '';
+    }
+    if (!next.name) throw new Error('El proyecto necesita un nombre');
+    this.store.set('project', next);
+    return next;
+  }
+
+  /* ---------- carpetas (bins) en arbol ---------- */
+  descendants(binId) {
+    const out = new Set([binId]); let grew = true;
+    while (grew) { grew = false; for (const b of Object.values(this.bins)) if (b.parent && out.has(b.parent) && !out.has(b.id)) { out.add(b.id); grew = true; } }
+    return out;
+  }
+
+  /** Crea (si no existe) la cadena de carpetas y devuelve la mas profunda. `extra` solo se aplica a la ultima. */
+  ensureBinPath(segments, extra = {}) {
+    let parent = null, bin = null; const segs = segments.filter(Boolean);
+    segs.forEach((name, i) => {
+      bin = Object.values(this.bins).find((b) => b.name === name && (b.parent || null) === parent);
+      if (!bin) { bin = { id: uid(), name, parent, created: new Date().toISOString(), ...(i === segs.length - 1 ? extra : {}) }; this.store.data.bins[bin.id] = bin; }
+      else if (i === segs.length - 1 && Object.keys(extra).length) Object.assign(bin, extra);
+      parent = bin.id;
+    });
+    this.store.save();
+    return bin;
+  }
+  upsertBin(name, extra = {}) { return this.ensureBinPath([name], extra); }
+
+  /** Carpetas con estadisticas propias y acumuladas (incluyen descendientes). */
+  listBins() {
+    const own = {};
+    const zero = () => ({ clips: 0, size: 0, video: 0, audio: 0, still: 0, duration: 0 });
+    for (const c of Object.values(this.clips)) {
+      const s = own[c.bin] || (own[c.bin] = zero());
+      s.clips++; s.size += c.size || 0; s[c.kind] = (s[c.kind] || 0) + 1; s.duration += c.meta?.duration || 0;
+    }
+    const total = {};
+    for (const b of Object.values(this.bins)) total[b.id] = zero();
+    for (const [id, s] of Object.entries(own)) {
+      let cur = this.bins[id]; const seen = new Set();
+      while (cur && !seen.has(cur.id)) { seen.add(cur.id); const t = total[cur.id]; for (const k of Object.keys(s)) t[k] += s[k]; cur = cur.parent ? this.bins[cur.parent] : null; }
+    }
+    return Object.values(this.bins).map((b) => ({ ...b, count: total[b.id].clips, own: own[b.id]?.clips || 0, stats: total[b.id] })).sort((a, b) => a.name.localeCompare(b.name, 'es', { numeric: true }));
+  }
+
+  listClips({ bin, smartId, search, recursive = true } = {}) {
     let clips = Object.values(this.clips);
-    if (bin) clips = clips.filter((c) => c.bin === bin);
+    if (bin) { const ids = recursive ? this.descendants(bin) : new Set([bin]); clips = clips.filter((c) => ids.has(c.bin)); }
     if (smartId) {
       const sf = this.store.get('smartFolders').find((s) => s.id === smartId);
       if (sf) clips = clips.filter((c) => matchSmart(c, sf));
     }
     if (search) {
       const q = search.toLowerCase();
-      clips = clips.filter((c) => [c.name, c.scene, c.shot, c.notes, c.reel, c.camera].some((x) => String(x ?? '').toLowerCase().includes(q)));
+      clips = clips.filter((c) => [c.name, c.scene, c.shot, c.notes, c.reel, c.camera, c.shotId].some((x) => String(x ?? '').toLowerCase().includes(q)));
     }
-    return clips.sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  listBins() {
-    const counts = {};
-    for (const c of Object.values(this.clips)) counts[c.bin] = (counts[c.bin] || 0) + 1;
-    return Object.values(this.bins).map((b) => ({ ...b, count: counts[b.id] || 0 })).sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  upsertBin(name, extra = {}) {
-    const existing = Object.values(this.bins).find((b) => b.name === name);
-    if (existing) return existing;
-    const bin = { id: uid(), name, created: new Date().toISOString(), ...extra };
-    this.store.data.bins[bin.id] = bin;
-    this.store.save();
-    return bin;
+    return clips.sort((a, b) => a.name.localeCompare(b.name, 'es', { numeric: true }));
   }
 
   updateClip(id, patch) {
     const c = this.clips[id];
     if (!c) throw new Error('Clip no encontrado');
-    const allowed = ['scene', 'shot', 'take', 'camera', 'reel', 'flag', 'rating', 'color', 'notes', 'name', 'custom', 'bin', 'look', 'transform', 'shotId'];
-    for (const k of Object.keys(patch)) if (allowed.includes(k)) c[k] = k === 'custom' ? { ...c.custom, ...patch.custom } : patch[k];
+    const allowed = ['scene', 'shot', 'take', 'camera', 'reel', 'flag', 'rating', 'color', 'notes', 'name', 'custom', 'cam', 'bin', 'look', 'transform', 'shotId'];
+    for (const k of Object.keys(patch)) if (allowed.includes(k)) c[k] = (k === 'custom' || k === 'cam') ? { ...c[k], ...patch[k] } : patch[k];
     this.store.save();
     return c;
   }
-
   bulkUpdate(ids, patch) { return ids.map((id) => this.updateClip(id, patch)); }
 
   addSmartFolder(sf) {
@@ -107,40 +151,90 @@ class Library {
     return this.store.data.customFields;
   }
 
-  /** Registra los ficheros de un job (primer destino) como clips. Analiza con ffprobe en segundo plano. */
-  async registerJob(job, { project, reel, camera, day } = {}, onClip) {
-    const bin = this.upsertBin(reel || path.basename(job.sources[0] || 'Bin'), { project, camera, day, jobId: job.id });
-    const dest = job.destinations[0];
-    const added = [];
-    for (const f of job.files) {
-      const d = f.dests?.[0];
-      if (!d) continue;
-      const kind = media.kindOf(f.rel);
-      if (!kind) continue;
-      const clip = {
-        id: uid(), bin: bin.id, name: path.basename(f.rel), path: d.path, relPath: f.rel, kind, size: f.size,
-        hashes: f.hashes, verified: d.status, jobId: job.id, reel: bin.name, camera: camera || '', scene: '', shot: '', take: '',
-        flag: '', rating: 0, color: '', notes: '', custom: {}, meta: null, thumb: null, added: new Date().toISOString(),
-      };
-      this.store.data.clips[clip.id] = clip;
-      added.push(clip);
-    }
-    this.store.save();
-    // analisis perezoso: no bloquea la UI
+  newClip(f, bin, extra) {
+    return {
+      id: uid(), bin: bin.id, name: path.basename(f.rel || f.abs), kind: f.kind, size: f.size, relPath: f.rel, hashes: null, verified: 'imported',
+      reel: '', camera: '', scene: '', shot: '', take: '', shotId: '', flag: '', rating: 0, color: '', notes: '', custom: {}, cam: {}, meta: null, thumb: null,
+      copies: [], volume: '', added: new Date().toISOString(), ...extra,
+    };
+  }
+
+  /** ffprobe + miniatura en segundo plano; no bloquea la interfaz. */
+  analyze(clips, onClip) {
     (async () => {
-      for (const clip of added) {
-        if (clip.kind !== 'video') continue;
+      for (const clip of clips) {
+        if (clip.kind !== 'video' && clip.kind !== 'audio') continue;
         try {
           clip.meta = await media.probe(clip.path);
-          const at = Math.min(1, (clip.meta.duration || 1) / 2);
-          const out = path.join(this.thumbDir, `${clip.id}.jpg`);
-          clip.thumb = await media.thumbnail(clip.path, out, at);
+          if (clip.kind === 'video') {
+            const at = Math.min(1, (clip.meta.duration || 1) / 2);
+            clip.thumb = await media.thumbnail(clip.path, path.join(this.thumbDir, `${clip.id}.jpg`), at);
+          }
         } catch (e) { clip.metaError = e.message; }
         this.store.save();
         onClip?.(clip);
       }
     })();
-    return { bin, clips: added };
+  }
+
+  /** Registra los ficheros de un job (primer destino). Las carpetas se crean segun la ruta copiada. */
+  async registerJob(job, { project, reel, camera, day } = {}, onClip) {
+    const added = []; let firstBin = null;
+    for (const f of job.files) {
+      const d = f.dests?.[0];
+      if (!d) continue;
+      const kind = media.kindOf(f.rel);
+      if (!kind) continue;
+      const segs = path.dirname(f.rel).split(/[\\/]/).filter((x) => x && x !== '.');
+      const bin = this.ensureBinPath(segs.length ? segs : [reel || 'Offload'], { project, camera, day, jobId: job.id });
+      firstBin = firstBin || bin;
+      added.push(this.newClip({ rel: f.rel, kind, size: f.size }, bin, {
+        path: d.path, hashes: f.hashes, verified: d.status, jobId: job.id, reel: reel || bin.name, camera: camera || '',
+        volume: path.basename((job.sources[0] || '').replace(/[\\/]+$/, '')) || volumeOf(job.sources[0] || ''),
+        copies: f.dests.map((x) => ({ path: x.path, status: x.status })),
+      }));
+    }
+    for (const c of added) this.store.data.clips[c.id] = c;
+    this.store.save();
+    this.analyze(added, onClip);
+    return { bin: firstBin, clips: added };
+  }
+
+  /** Importa ficheros ya existentes (sin copiarlos) conservando la estructura de carpetas. */
+  async importFolder(root, opts = {}, onClip) {
+    const camera = opts.camera || "";
+    const files = await walk(root);
+    const known = new Set(Object.values(this.clips).map((c) => c.path));
+    const base = path.basename(root.replace(/[\\/]+$/, '')) || root;
+    const added = []; let skipped = 0, dup = 0;
+    const only = opts.only ? new Set(opts.only) : null;
+    for (const f of files) {
+      if (only && !only.has(f.abs)) continue;
+      const kind = media.kindOf(f.abs);
+      if (!kind) { skipped++; continue; }
+      if (known.has(f.abs)) { dup++; continue; }
+      const segs = [base, ...path.dirname(f.rel).split(/[\\/]/).filter((x) => x && x !== '.')];
+      const bin = this.ensureBinPath(segs, { imported: true });
+      added.push(this.newClip({ rel: f.rel, abs: f.abs, kind, size: f.size }, bin, { path: f.abs, name: path.basename(f.abs), reel: bin.name, camera, volume: volumeOf(f.abs), copies: [{ path: f.abs, status: 'original' }] }));
+    }
+    for (const c of added) this.store.data.clips[c.id] = c;
+    this.store.save();
+    this.analyze(added, onClip);
+    return { imported: added.length, skipped, duplicates: dup, clips: added };
+  }
+
+  /** Registra salidas de transcode en la carpeta "Transcodes". */
+  async registerTranscode(srcClip, outFile, preset, onClip) {
+    const st = await require('node:fs/promises').stat(outFile);
+    const bin = this.ensureBinPath(['Transcodes', preset || 'Salida'], { transcodes: true });
+    const kind = media.kindOf(outFile) || 'video';
+    const clip = this.newClip({ rel: path.basename(outFile), abs: outFile, kind, size: st.size }, bin, {
+      path: outFile, reel: srcClip?.reel || '', camera: srcClip?.camera || '', scene: srcClip?.scene || '', shot: srcClip?.shot || '', take: srcClip?.take || '',
+      shotId: srcClip?.shotId || '', volume: volumeOf(outFile), verified: 'transcode', derivedFrom: srcClip?.id || null, copies: [{ path: outFile, status: 'original' }],
+    });
+    this.store.data.clips[clip.id] = clip; this.store.save();
+    this.analyze([clip], onClip);
+    return clip;
   }
 
   addJob(job) {
@@ -152,4 +246,4 @@ class Library {
   listJobs() { return this.store.get('jobs'); }
 }
 
-module.exports = { Library, matchSmart, matchRule, BASE_FIELDS };
+module.exports = { Library, matchSmart, matchRule, PROJECT_FIELDS, volumeOf };

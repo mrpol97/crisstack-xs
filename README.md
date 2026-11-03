@@ -46,6 +46,17 @@ La primera vez, macOS pedirá abrirla con clic derecho → Abrir (no está firma
 - **Transcodificar**: ProRes Proxy/422/HQ, DNxHR LB/SQ, H.264, H.265; escalado, LUT `.cube`,
   timecode y nombre quemados; puede lanzarse automáticamente tras el offload.
 
+## Novedades v0.3
+
+- **Proyectos con ficha**: nombre, director, dir. de fotografía, ayudantes de cámara, DIT, data manager, sonido, script, productor,
+  productora, localización, logo y copyright. Se crean desde el selector de proyecto y se editan siempre desde la Biblioteca.
+  La ficha se enlaza con el Offload (nombre de proyecto, DIT en la lista MHL) y con la cabecera de los informes.
+- **Biblioteca en árbol de carpetas** (la estructura del offload y de lo importado) con botón **Importar** (carpetas o ficheros, sin copiar).
+- **Tres vistas**: lista (columnas configurables y editables, con las que el usuario añada), miniaturas y carpetas (clips, tamaño y tipos por carpeta).
+- **Transcodificación robusta**: escribe en un fichero temporal, solo da por bueno un resultado con contenido, registra la salida
+  en la carpeta «Transcodes» con su información y muestra el motivo exacto de cualquier error.
+- Guía de uso en PDF: [docs/CrisStack-XS-Guia.pdf](docs/CrisStack-XS-Guia.pdf).
+
 ## Añadido en v0.2
 
 - **Color**: ASC CDL (slope/offset/power/saturación) y LUT 3D `.cube` en tiempo real (WebGL2), copiar/pegar look,

@@ -78,7 +78,8 @@ async function renderPdf(html, outFile) {
 async function makeReport(type, { clipIds, jobIds, project, day, format = 'html', dark = false, outDir }) {
   const clips = clipIds?.length ? clipIds.map((i) => lib.clips[i]).filter(Boolean) : Object.values(lib.clips);
   const jobs = jobIds?.length ? lib.listJobs().filter((j) => jobIds.includes(j.id)) : lib.listJobs();
-  const html = report.build(type, { clips, jobs, project, day, dark });
+  const info = lib.getProject();
+  const html = report.build(type, { clips, jobs, project: info?.name || project, day, dark, projectInfo: info });
   const dir = outDir || path.join(app.getPath('documents'), 'Cinestack Reports');
   await fsp.mkdir(dir, { recursive: true });
   const base = path.join(dir, `${type}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}`);
@@ -90,6 +91,8 @@ async function makeReport(type, { clipIds, jobIds, project, day, format = 'html'
 async function startWorkflow(cfg) {
   // cfg: { sources[], destinations[], template, project, camera, day, algos[], verify, mhl, report:{type,format}|null, transcode:{preset,dir,height,lut,burnTimecode,burnName}|null }
   const results = [];
+  const info = lib.getProject();
+  if (info?.name) cfg.project = info.name; // el proyecto activo manda sobre lo que haya escrito el formulario
   for (let i = 0; i < cfg.sources.length; i++) {
     const src = cfg.sources[i];
     const reel = path.basename(src.replace(/[\\/]+$/, '')) || src;
@@ -105,7 +108,7 @@ async function startWorkflow(cfg) {
         rename: tools.makeRenamer(cfg.rename, { reel, camera: cfg.camera, project: cfg.project }),
         onProgress: (p) => send('job:progress', { key, ...p }),
       });
-      job.reel = reel; job.project = cfg.project; job.day = cfg.day; job.camera = cfg.camera;
+      job.reel = reel; job.project = cfg.project; job.day = cfg.day; job.camera = cfg.camera; job.operator = info?.dit || info?.dataManager || '';
       const post = [];
       if (cfg.mhl) for (const d of cfg.destinations) post.push(await writeMhl(job, d, `${folderName.replace(/[\\/]/g, '_')}_${job.id}`));
       if (cfg.ascmhl && job.ok) for (const d of cfg.destinations) { const r = await ascmhl.seal(path.join(d, folderName), { algos: cfg.algos }); if (r.ok) post.push(r.file); }
@@ -137,10 +140,15 @@ async function runTranscodes(ids, t) {
   const preset = media.PRESETS[t.preset];
   const outDir = t.dir || path.join(app.getPath('documents'), 'Cinestack Transcodes');
   const outputs = [];
+  const results = [];
+  const logFile = path.join(app.getPath('userData'), 'transcode.log');
   for (const id of ids) {
     const c = lib.clips[id];
     if (!c) continue;
-    if (!c.meta) { try { c.meta = await media.probe(c.path); } catch { continue; } }
+    const item = { id, name: c.name };
+    if (c.kind !== 'video') { item.error = 'Solo se pueden transcodificar clips de vídeo'; results.push(item); send('transcode:done', item); continue; }
+    if (!(await fsp.access(c.path).then(() => true, () => false))) { item.error = `No se encuentra el fichero original (${c.path}). Usa Archivo → Relink.`; results.push(item); send('transcode:done', item); continue; }
+    if (!c.meta) { try { c.meta = await media.probe(c.path); } catch (e) { item.error = 'No se pudo leer el clip: ' + e.message; results.push(item); send('transcode:done', item); continue; } }
     const out = path.join(outDir, c.reel || 'clips', path.basename(c.name, path.extname(c.name)) + preset.ext);
     const ac = new AbortController(); const key = `tc-${id}`; running.set(key, ac);
     send('transcode:start', { id, name: c.name });
@@ -149,10 +157,17 @@ async function runTranscodes(ids, t) {
       if (t.lut) luts.push(t.lut);
       const tr = c.transform || {};
       await media.transcode(c.path, out, { ...t, luts, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate, duration: c.meta.duration, fps: c.meta.fps, startTimecode: c.meta.timecode, signal: ac.signal, onProgress: (p) => send('transcode:progress', { id, p }) });
-      outputs.push(out);
-      send('transcode:done', { id, out });
-    } catch (e) { send('transcode:done', { id, error: e.message }); } finally { running.delete(key); }
+      const size = (await fsp.stat(out)).size;
+      const reg = await lib.registerTranscode(c, out, preset.label, (cl) => send('library:clip', cl)); // aparece en la carpeta "Transcodes" con su informacion
+      outputs.push(out); Object.assign(item, { out, size, clipId: reg.id });
+      send('transcode:done', item);
+    } catch (e) {
+      item.error = e.message; send('transcode:done', item);
+      fsp.appendFile(logFile, `[${new Date().toISOString()}] ${c.name} -> ${preset.label}: ${e.message}\n`).catch(() => {});
+    } finally { running.delete(key); }
+    results.push(item);
   }
+  send('transcode:summary', { results, logFile });
   if (t.s3 && outputs.length) { try { await uploadPaths(outputs, t.s3prefix || ''); send('transcode:done', { id: 'upload', out: `${outputs.length} ficheros subidos a S3` }); } catch (e) { send('transcode:error', { error: e.message }); } }
   return outputs;
 }
@@ -278,7 +293,7 @@ function registerIpc2() {
   });
 
   // intercambio
-  h('export:ale', (ids, fps) => saveText('clips.ale', exportsM.toAle(pick(ids), fps || 25)));
+  h('export:ale', (ids, fps) => saveText('clips.ale', exportsM.toAle(pick(ids), fps || 25, lib.store.get('customFields') || [])));
   h('export:fcp7', (ids, fps) => saveText('clips.xml', exportsM.toFcp7Xml(pick(ids), 'Cinestack', fps || 25)));
   h('export:fcpxml', (ids, fps) => saveText('clips.fcpxml', exportsM.toFcpxml(pick(ids), 'Cinestack', fps || 25)));
   h('export:ccc', (ids) => saveText('looks.ccc', exportsM.toCcc(pick(ids))));
@@ -313,8 +328,53 @@ function registerIpc2() {
   h('workflows:list', () => appState.get('workflows'));
   h('workflows:save', (w) => { appState.set('workflows', [...appState.get('workflows').filter((x) => x.name !== w.name), w]); });
   h('workflows:remove', (name) => appState.set('workflows', appState.get('workflows').filter((x) => x.name !== name)));
-  h('project:list', async () => ['Default', ...(await fsp.readdir(path.join(app.getPath('userData'), 'projects')).catch(() => [])).filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -5))]);
-  h('project:switch', async (name) => { await fsp.mkdir(path.join(app.getPath('userData'), 'projects'), { recursive: true }); openProject(name); });
+  // proyectos: cada uno es un fichero con su biblioteca y su ficha (equipo, logo, copyright)
+  h('project:list', async () => {
+    const dir = path.join(app.getPath('userData'), 'projects');
+    const ids = ['Default', ...(await fsp.readdir(dir).catch(() => [])).filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -5))];
+    const out = [];
+    for (const id of ids) {
+      let name = id === 'Default' ? 'Sin título' : id;
+      try { const d = JSON.parse(await fsp.readFile(projectFile(id), 'utf8')); if (d.project?.name) name = d.project.name; } catch { /* aun no existe */ }
+      out.push({ id, name });
+    }
+    return out;
+  });
+  h('project:switch', async (id) => { await fsp.mkdir(path.join(app.getPath('userData'), 'projects'), { recursive: true }); openProject(id); });
+  h('project:get', () => ({ id: appState.get('project'), info: lib.getProject() }));
+  h('project:update', (info) => lib.setProject(info));
+  h('project:create', async (info) => {
+    const name = String(info?.name || '').trim(); if (!name) throw new Error('El proyecto necesita un nombre');
+    const dir = path.join(app.getPath('userData'), 'projects'); await fsp.mkdir(dir, { recursive: true });
+    const base = name.replace(/[^\w .-]/g, '_').slice(0, 60) || 'Proyecto'; let id = base, n = 2;
+    while (id === 'Default' || await fsp.access(projectFile(id)).then(() => true, () => false)) id = `${base} ${n++}`;
+    openProject(id); lib.setProject(info);
+    return { id };
+  });
+  h('logo:pick', async () => {
+    const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: 'Imagen', extensions: ['png', 'jpg', 'jpeg', 'svg', 'webp'] }] });
+    if (r.canceled) return null;
+    const f = r.filePaths[0]; const st = await fsp.stat(f); if (st.size > 1.5 * 1024 * 1024) throw new Error('El logo es demasiado grande (máximo 1,5 MB)');
+    const ext = path.extname(f).slice(1).toLowerCase(); const mime = ext === 'svg' ? 'svg+xml' : ext === 'jpg' ? 'jpeg' : ext;
+    return `data:image/${mime};base64,${(await fsp.readFile(f)).toString('base64')}`;
+  });
+  // importar ficheros existentes sin copiarlos (mantienen su estructura de carpetas)
+  h('import:folder', async () => {
+    const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'multiSelections'], title: 'Importar carpetas a la biblioteca' });
+    if (r.canceled) return null;
+    const total = { imported: 0, skipped: 0, duplicates: 0 };
+    for (const root of r.filePaths) { const x = await lib.importFolder(root, {}, (c) => send('library:clip', c)); for (const k of Object.keys(total)) total[k] += x[k]; }
+    return total;
+  });
+  h('import:files', async () => {
+    const r = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: 'Importar ficheros a la biblioteca' });
+    if (r.canceled) return null;
+    const byDir = new Map(); for (const f of r.filePaths) (byDir.get(path.dirname(f)) || byDir.set(path.dirname(f), []).get(path.dirname(f))).push(f);
+    const total = { imported: 0, skipped: 0, duplicates: 0 };
+    for (const [dir, files] of byDir) { const x = await lib.importFolder(dir, { only: files }, (c) => send('library:clip', c)); for (const k of Object.keys(total)) total[k] += x[k]; }
+    return total;
+  });
+  h('export:text', (name, text) => saveText(name, text));
   h('archive:export', async () => {
     const r = await dialog.showSaveDialog(win, { defaultPath: `cinestack-${appState.get('project')}.cinestack.json` }); if (r.canceled) return null;
     await fsp.writeFile(r.filePath, JSON.stringify({ app: 'cinestack', version: 1, project: appState.get('project'), library: lib.store.data, looks: appState.get('looks'), workflows: appState.get('workflows') }, null, 2)); return r.filePath;
@@ -363,7 +423,9 @@ async function selftest(outDir) {
   const log = []; const step = (n, v) => { log.push([n, v]); console.log('[selftest]', n, JSON.stringify(v)); };
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const js = (code) => win.webContents.executeJavaScript(code).catch((e) => { throw new Error(`JS fallo: ${code.slice(0, 90)} -> ${e.message}`); });
-  const shot = async (name) => { const img = await win.webContents.capturePage(); await fsp.writeFile(path.join(outDir, name + '.png'), img.toPNG()); };
+  const shot = async (name) => { // capturePage puede fallar de forma puntual si el compositor se reinicia: se reintenta
+    for (let i = 0; i < 4; i++) { try { win.show(); const img = await win.webContents.capturePage(); await fsp.writeFile(path.join(outDir, name + '.png'), img.toPNG()); return; } catch (e) { step('captura fallida', [name, i, String(e.message)]); await wait(700); } }
+  };
   win.webContents.on('console-message', (_e, level, msg, line, src) => step('renderer-console', [level, msg, line, path.basename(src || '')]));
   try {
     win.webContents.reload(); await wait(1500);
@@ -418,6 +480,58 @@ async function selftest(outDir) {
     step('clips con rename', Object.values(lib.clips).map((c) => c.name));
     const hist = await ascmhl.verify(path.join(dests[0], 'Peli', 'Dia_01', 'A_CARD_A001'));
     step('ascmhl verify', { ok: hist.ok, gen: hist.generation, n: hist.results.length });
+
+    // --- v0.3: proyecto con ficha, importar carpetas, tres vistas, edicion de celdas, transcode ---
+    await js(`go('library')`); await wait(600);
+    js(`newProject()`); await wait(700); await shot('n0-proyecto');
+    await js(`(()=>{const d=document.querySelector('dialog.pform');const set=(i,v)=>{const el=d.querySelectorAll('input[type=text]')[i];el.value=v;el.dispatchEvent(new Event('input',{bubbles:true}));};set(0,'Mi Peli');set(1,'Ana Directora');set(2,'Luis DoP');set(5,'Pol DIT');set(10,'Productora Test');set(11,'Barcelona');set(12,'© 2026 Productora Test');d.querySelector('button[type=submit]').click();})()`);
+    await wait(1500);
+    const pj = await js(`api.invoke('project:get')`); step('project', { id: pj.id, name: pj.info?.name, director: pj.info?.director, dit: pj.info?.dit, production: pj.info?.production });
+    step('project list', await js(`api.invoke('project:list')`));
+    const imp = path.join(outDir, 'IMPORT');
+    const mk = (rel, extra) => { const f = path.join(imp, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); return spawnSync(media.FFMPEG, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=25:duration=2', ...extra, f]).status; };
+    step('mk clips', [mk('Dia 1/CamA/A001.mp4', ['-c:v', 'libx264', '-pix_fmt', 'yuv420p']), mk('Dia 1/CamA/A002.mp4', ['-c:v', 'libx264', '-pix_fmt', 'yuv420p']), mk('Dia 2/CamB/B001.mp4', ['-c:v', 'libx264', '-pix_fmt', 'yuv420p'])]);
+    fs.mkdirSync(path.join(imp, 'Dia 1', 'Sonido'), { recursive: true });
+    step('mk wav', spawnSync(media.FFMPEG, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', path.join(imp, 'Dia 1', 'Sonido', 'toma1.wav')]).status);
+    fs.writeFileSync(path.join(imp, 'notas.txt'), 'no es medio');
+    const ir = await lib.importFolder(imp, {}, (c) => send('library:clip', c));
+    step('import', { imported: ir.imported, skipped: ir.skipped, duplicates: ir.duplicates });
+    step('reimport (sin duplicar)', (await lib.importFolder(imp, {}, () => {})).duplicates);
+    await wait(4500);
+    const bins = lib.listBins(); const nm = (id) => bins.find((b) => b.id === id)?.name;
+    step('bins', bins.map((b) => `${b.parent ? nm(b.parent) + ' > ' : ''}${b.name} [${b.count} clips, ${b.own} propios]`));
+    await js(`state.lib.bin=null; go('library'); render()`); await wait(900);
+    step('tree rows', await js(`[...document.querySelectorAll('.tree .trow .tname')].map((e) => e.textContent)`));
+    await js(`document.querySelectorAll('.segs .seg')[0].click()`); await wait(900);
+    step('list cols/rows', await js(`({ cols: document.querySelectorAll('.ltable thead th').length, rows: document.querySelectorAll('.ltable tbody tr').length, headers: [...document.querySelectorAll('.ltable thead th')].map((t) => t.textContent.trim()).filter(Boolean) })`));
+    await shot('n1-lista');
+    // editar celda ISO: doble clic -> escribir -> Enter
+    await js(`(()=>{const idx=[...document.querySelectorAll('.ltable thead th')].findIndex((t)=>t.textContent.includes('ISO (clip)'));const td=document.querySelector('.ltable tbody tr').children[idx];td.dispatchEvent(new MouseEvent('dblclick',{bubbles:true}));const i=td.querySelector('input');i.value='800';i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`); await wait(900);
+    step('ISO editado', Object.values(lib.clips).filter((c) => c.cam?.iso === '800').map((c) => c.name));
+    // columna propia
+    await js(`api.invoke('library:fields:add', 'Lente prestada')`); await js(`(()=>{const ids=JSON.parse(localStorage.getItem('cine.cols')||'null')||DEFAULT_COLS;localStorage.setItem('cine.cols',JSON.stringify([...ids,'custom:Lente prestada']));})()`); await js(`render()`); await wait(900);
+    step('columna propia visible', await js(`[...document.querySelectorAll('.ltable thead th')].some((t)=>t.textContent.includes('Lente prestada'))`));
+    await js(`document.querySelectorAll('.segs .seg')[2].click()`); await wait(900);
+    step('folders cards', await js(`[...document.querySelectorAll('.fcard')].map((c)=>c.innerText.replace(/\\n+/g,' | '))`)); await shot('n2-carpetas');
+    await js(`document.querySelectorAll('.fcard')[0].click()`); await wait(900);
+    step('folders dentro', await js(`[...document.querySelectorAll('.fcard')].map((c)=>c.innerText.replace(/\\n+/g,' | '))`));
+    await js(`document.querySelectorAll('.segs .seg')[1].click()`); await wait(900); await shot('n3-miniaturas');
+    step('miniaturas', await js(`document.querySelectorAll('.clip').length`));
+    // enlace con offload
+    await js(`go('offload')`); await wait(900);
+    step('offload enlazado', await js(`({ input: document.querySelector('#main input[disabled]')?.value, linea: document.querySelector('.projlink')?.innerText })`)); await shot('n4-offload-proyecto');
+    // informe con ficha de proyecto
+    const rep = await makeReport('clips', { project: 'x', format: 'html' }); const rh = fs.readFileSync(rep, 'utf8');
+    step('informe ficha', { productora: rh.includes('Productora Test'), director: rh.includes('Ana Directora'), copyright: rh.includes('© 2026 Productora Test'), dit: rh.includes('Pol DIT') });
+    // transcode OK + fallo controlado
+    const vid = Object.values(lib.clips).find((c) => c.name === 'A001.mp4'); const wav = Object.values(lib.clips).find((c) => c.name === 'toma1.wav');
+    const outs = await runTranscodes([vid.id, wav.id], { preset: 'prores_proxy', dir: path.join(outDir, 'TC2') }); await wait(2500);
+    const reg = Object.values(lib.clips).find((c) => c.verified === 'transcode');
+    step('transcode', { outputs: outs.length, registrado: reg && { name: reg.name, size: reg.size, codec: reg.meta?.codec, bin: lib.bins[reg.bin]?.name } });
+    step('transcode resultados UI', await js(`state.tcResults && state.tcResults.map((r)=>({n:r.name,err:r.error||null,size:r.size||0}))`));
+    step('sin parciales', fs.readdirSync(path.join(outDir, 'TC2', vid.reel || 'clips')).filter((n) => n.includes('.partial')));
+    await js(`go('transcode')`); await wait(900); await shot('n5-transcode');
+    await js(`go('library')`); await wait(900);
     step('mhl exists', !!mhl && fs.existsSync(mhl));
     step('root exists', fs.existsSync(root));
     await fsp.writeFile(path.join(outDir, 'selftest.json'), JSON.stringify(log, null, 2));

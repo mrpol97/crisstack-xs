@@ -9,7 +9,7 @@ function buildMhl(job, creatorName = 'Cinestack') {
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<hashlist version="1.1">',
     '  <creatorinfo>',
-    `    <name>${esc(process.env.USERNAME || process.env.USER || 'user')}</name>`,
+    `    <name>${esc(job.operator || process.env.USERNAME || process.env.USER || 'user')}</name>`,
     `    <username>${esc(process.env.USERNAME || process.env.USER || 'user')}</username>`,
     `    <hostname>${esc(require('node:os').hostname())}</hostname>`,
     `    <tool>${esc(creatorName)}</tool>`,

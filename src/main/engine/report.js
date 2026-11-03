@@ -21,8 +21,20 @@ function thumbSrc(clip) {
   try { return 'data:image/jpeg;base64,' + fs.readFileSync(clip.thumb).toString('base64'); } catch { return ''; }
 }
 
+let CURRENT_INFO = null; // ficha del proyecto del informe que se esta generando (build es sincrono)
+const ROLES = [['director', 'Director'], ['cinematographer', 'Dir. fotografía'], ['cameraAssistant', '1.er ayte. cámara'], ['cameraAssistant2', '2.º ayte. cámara'], ['dit', 'DIT'], ['dataManager', 'Data manager'], ['soundMixer', 'Sonido'], ['scriptSupervisor', 'Script'], ['producer', 'Productor']];
+
+function projectHeader(info) {
+  if (!info) return '';
+  const crew = ROLES.filter(([k]) => info[k]).map(([k, l]) => `<span><b>${esc(l)}</b> ${esc(info[k])}</span>`).join('');
+  const logo = info.logo && /^data:image\/(png|jpe?g|svg\+xml|webp);base64,/.test(info.logo) ? `<img class="logo" src="${info.logo}" alt="">` : '';
+  return `<div class="proj">${logo}<div><div class="pname">${esc(info.production || info.name || '')}</div><div class="psub">${esc([info.name, info.location].filter(Boolean).join(' · '))}</div><div class="crew">${crew}</div></div></div>`;
+}
+
 function wrap(title, subtitle, body, dark) {
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(title)}</title><style>${CSS(dark)}</style></head><body><h1>${esc(title)}</h1><div class="sub">${esc(subtitle)}</div>${body}</body></html>`;
+  const css = `${CSS(dark)}.proj{display:flex;gap:16px;align-items:center;border-bottom:2px solid var(--line);padding-bottom:12px;margin-bottom:14px}.proj .logo{max-height:56px;max-width:160px;object-fit:contain}.pname{font-size:16px;font-weight:700}.psub{color:var(--mut)}.crew{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:4px;font-size:11px}.crew b{color:var(--mut);font-weight:600;margin-right:4px}.foot{margin-top:24px;padding-top:8px;border-top:1px solid var(--line);color:var(--mut);font-size:10px}`;
+  const foot = CURRENT_INFO?.copyright ? `<div class="foot">${esc(CURRENT_INFO.copyright)}</div>` : '';
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(title)}</title><style>${css}</style></head><body>${projectHeader(CURRENT_INFO)}<h1>${esc(title)}</h1><div class="sub">${esc(subtitle)}</div>${body}${foot}</body></html>`;
 }
 
 function jobSummary(jobs) {
@@ -32,7 +44,9 @@ function jobSummary(jobs) {
   return `<div><span class="stat"><b>${jobs.length}</b>Jobs</span><span class="stat"><b>${files}</b>Ficheros</span><span class="stat"><b>${fmtBytes(bytes)}</b>Datos</span><span class="stat"><b class="${fails ? 'bad' : 'ok'}">${fails ? fails + ' errores' : 'Todo verificado'}</b>Estado</span></div>`;
 }
 
-function build(type, { clips = [], jobs = [], project = 'Proyecto', day = '', dark = false } = {}) {
+function build(type, { clips = [], jobs = [], project = 'Proyecto', day = '', dark = false, projectInfo = null } = {}) {
+  CURRENT_INFO = projectInfo;
+  if (projectInfo?.name) project = projectInfo.name;
   const sub = `${project}${day ? ' · Día ' + day : ''} · generado ${new Date().toLocaleString('es-ES')}`;
   if (type === 'volume') {
     let body = jobSummary(jobs);

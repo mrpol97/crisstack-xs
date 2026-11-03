@@ -53,9 +53,12 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.vi
 /* selector de proyecto y diseno QC */
 async function drawProjects() {
   const sel = $('#projectSel'), [list, S] = await Promise.all([api.invoke('project:list'), api.invoke('settings:get')]);
-  sel.replaceChildren(...list.map((p) => h('option', { value: p, selected: p === S.project }, p)));
+  sel.replaceChildren(...list.map((p) => h('option', { value: p.id, selected: p.id === S.project }, p.name)), h('option', { value: '__new__' }, '＋ Nuevo proyecto…'));
 }
-$('#projectSel').addEventListener('change', async (e) => { await api.invoke('project:switch', e.target.value); state.lib.sel.clear(); state.playerClipId = null; toast('Proyecto: ' + e.target.value); render(); });
+$('#projectSel').addEventListener('change', async (e) => {
+  if (e.target.value === '__new__') { await drawProjects(); return newProject(); }
+  await api.invoke('project:switch', e.target.value); state.lib.sel.clear(); state.lib.bin = state.lib.smart = null; state.playerClipId = null; toast('Proyecto: ' + e.target.selectedOptions[0].textContent); render();
+});
 try { if (localStorage.getItem('cine.qc') === '1') document.body.classList.add('qc'); } catch { /* sin storage */ }
 $('#qcBtn').addEventListener('click', () => { const on = document.body.classList.toggle('qc'); try { localStorage.setItem('cine.qc', on ? '1' : '0'); } catch { /* */ } });
 
@@ -113,6 +116,12 @@ api.on('transcode:start', (e) => { state.tc = { name: e.name, p: 0 }; drawJobsBa
 api.on('transcode:progress', (e) => { if (state.tc) { state.tc.p = e.p; drawJobsBar(); } });
 api.on('transcode:done', (e) => { state.tc = null; drawJobsBar(); toast(e.error ? `Error de transcode: ${e.error}` : `Transcode listo: ${e.out}`); });
 api.on('transcode:error', (e) => { state.tc = null; drawJobsBar(); toast(`Error: ${e.error}`); });
+api.on('transcode:summary', (e) => {
+  state.tcResults = e.results; state.tcLog = e.logFile;
+  const bad = e.results.filter((r) => r.error).length;
+  toast(bad ? `Transcodificación terminada con ${bad} ${bad === 1 ? 'error' : 'errores'}. Mira el detalle en Transcodificar.` : `Transcodificación terminada: ${e.results.length} ${e.results.length === 1 ? 'clip' : 'clips'}. Están en la carpeta «Transcodes» de la biblioteca.`);
+  if (state.view === 'transcode') render(); else if (state.view === 'library') refreshClips();
+});
 function updateBadge() { const b = $('#jobsBadge'); b.hidden = !runningCount; b.textContent = runningCount; drawJobsBar(); }
 
 /* ---------- OFFLOAD ---------- */
@@ -121,6 +130,7 @@ async function viewOffload() {
   const vols = await api.invoke('volumes:list');
   const presets = await api.invoke('presets:list');
   const wfs = await api.invoke('workflows:list');
+  const P = await api.invoke('project:get'); const pinfo = P.info; if (pinfo?.name) o.project = pinfo.name; // el proyecto activo manda
   const list = (arr, key) => h('div', { class: 'list' }, arr.length ? arr.map((p, i) => h('div', { class: 'item' }, h('span', { title: p }, p), h('button', { class: 'x', 'aria-label': 'Quitar', onclick: () => { arr.splice(i, 1); render(); } }, '×'))) : h('div', { class: 'mut' }, key === 'src' ? 'Añade una tarjeta o carpeta de origen.' : 'Añade al menos un destino. Con varios destinos se hace backup redundante.'));
   const algo = (id, label) => h('label', { class: 'chip' }, h('input', { type: 'checkbox', checked: o.algos.includes(id), onchange: (e) => { o.algos = e.target.checked ? [...new Set([...o.algos, id])] : o.algos.filter((x) => x !== id); if (!o.algos.length) { o.algos = ['xxh64']; render(); } } }), label);
   const preview = h('div', { class: 'mono mut' });
@@ -139,10 +149,14 @@ async function viewOffload() {
     h('div', { class: 'card col' },
       h('div', { class: 'row' },
         h('label', { class: 'f', style: 'flex:2;min-width:260px' }, 'Plantilla (comodines)', h('input', { type: 'text', ...bind('template') })),
-        h('label', { class: 'f' }, 'Proyecto', h('input', { type: 'text', ...bind('project') })),
+        h('label', { class: 'f', title: 'Se cambia en Biblioteca → Editar proyecto' }, 'Proyecto (enlazado)', pinfo?.name ? h('input', { type: 'text', value: pinfo.name, disabled: true }) : h('input', { type: 'text', ...bind('project') })),
         h('label', { class: 'f', style: 'width:90px' }, 'Cámara', h('input', { type: 'text', ...bind('camera') })),
         h('label', { class: 'f', style: 'width:80px' }, 'Día', h('input', { type: 'number', min: 1, ...bind('day', 'number') }))),
-      preview, h('div', { class: 'mut' }, 'Comodines: {project} {day} {camera} {reel} {card} {volume} {date} {yyyy} {mm} {dd} {time} {counter}')),
+      preview,
+      pinfo?.name ? h('div', { class: 'projlink' }, h('b', {}, 'Proyecto: '), pinfo.name, ...[['production', ''], ['director', 'Dir. '], ['dit', 'DIT '], ['dataManager', 'Data manager ']].filter(([k]) => pinfo[k]).map(([k, p]) => h('span', { class: 'mut' }, ` · ${p}${pinfo[k]}`)),
+        h('span', { class: 'mut' }, ' — estos datos salen en los informes y en la lista MHL.'), h('button', { class: 'btn', style: 'margin-left:8px', onclick: async () => { await editProject(); render(); } }, 'Editar'))
+        : h('div', { class: 'projlink warn' }, 'Aún no hay proyecto. ', h('button', { class: 'btn', onclick: newProject }, 'Crear proyecto'), ' para enlazar nombre, equipo y logo con el offload y los informes.'),
+      h('div', { class: 'mut' }, 'Comodines: {project} {day} {camera} {reel} {card} {volume} {date} {yyyy} {mm} {dd} {time} {counter}')),
     h('h2', {}, 'Verificación y post-pasos'),
     h('div', { class: 'card col' },
       h('div', { class: 'chips' }, algo('xxh64', 'XXH64'), algo('md5', 'MD5'), algo('sha1', 'SHA-1'), algo('sha256', 'SHA-256'),
@@ -206,33 +220,15 @@ async function refreshClips() {
   const grid = $('#clipGrid'); if (grid) drawClips(grid);
   drawInspector();
 }
-async function viewLibrary() {
-  const L = state.lib;
-  [L.bins, L.smarts, L.fields] = await Promise.all([api.invoke('library:bins'), api.invoke('library:smart:list'), api.invoke('library:fields:list')]);
-  const tree = h('div', { class: 'pane tree' });
-  const item = (label, count, active, onclick, extra) => h('button', { class: active ? 'active' : '', onclick }, h('span', {}, label), h('span', { class: 'mut' }, count ?? '', extra || ''));
-  tree.append(item('Todos los clips', '', !L.bin && !L.smart, () => { L.bin = L.smart = null; render(); }), h('div', { class: 'grp' }, 'Bins'),
-    ...L.bins.map((b) => item(b.name, b.count, L.bin === b.id, () => { L.bin = b.id; L.smart = null; render(); })), h('div', { class: 'grp' }, 'Carpetas inteligentes'),
-    ...L.smarts.map((s) => item(s.name, '', L.smart === s.id, () => { L.smart = s.id; L.bin = null; render(); })),
-    h('button', { onclick: smartDialog }, '+ Nueva carpeta inteligente'));
-  const center = h('div', { class: 'pane' },
-    h('div', { class: 'row', style: 'margin-bottom:10px' }, h('input', { type: 'text', placeholder: 'Buscar clip, escena, notas…', value: L.search, style: 'flex:1', oninput: (e) => { L.search = e.target.value; clearTimeout(L.t); L.t = setTimeout(refreshClips, 200); } }),
-      h('button', { class: 'btn', onclick: async () => { const f = await api.invoke('export:csv', [...L.sel]); if (f) toast('CSV guardado'); } }, 'CSV'),
-      h('button', { class: 'btn', onclick: async () => { const f = await api.invoke('export:edl', [...L.sel], 25); if (f) toast('EDL guardado'); } }, 'EDL')),
-    h('div', { id: 'clipGrid', class: 'clips' }));
-  const insp = h('div', { class: 'pane', id: 'inspector' });
-  $('#libHost').replaceChildren(h('div', { class: 'lib' }, tree, center, insp));
-  L.clips = await api.invoke('library:clips', { bin: L.bin, smartId: L.smart, search: L.search });
-  drawClips($('#clipGrid')); drawInspector();
-}
-function drawClips(grid) {
+async function viewLibrary() { return libraryScreen(); }
+function drawGrid(grid) {
   const L = state.lib;
   if (!L.clips.length) return grid.replaceChildren(h('div', { class: 'empty', style: 'grid-column:1/-1' }, 'No hay clips. Haz un offload o cambia el filtro.'));
   grid.replaceChildren(...L.clips.map((c, idx) => h('div', { class: 'clip' + (L.sel.has(c.id) ? ' sel' : ''), tabindex: 0, onclick: (e) => selectClip(c, idx, e), ondblclick: () => play(c) },
     h('div', { class: 'th' }, c.thumb ? h('img', { src: `cine://thumb/${c.id}`, alt: '', loading: 'lazy' }) : (c.kind === 'video' ? 'Analizando…' : c.kind)),
     h('div', { class: 'meta' }, h('b', { title: c.name }, c.name),
       h('span', { class: 'mut' }, [c.meta?.width ? `${c.meta.width}×${c.meta.height}` : '', c.meta?.fps ? `${+c.meta.fps.toFixed(2)}p` : '', fmtDur(c.meta?.duration)].filter(Boolean).join(' · ') || fmtBytes(c.size)),
-      h('div', {}, h('span', { class: c.flag ? 'flag-' + c.flag : 'mut' }, c.flag ? { good: '✔ Bueno', bad: '✖ Malo', hold: '● Pendiente' }[c.flag] : ''), c.rating ? h('span', { class: 'warn' }, ' ' + '★'.repeat(c.rating)) : '', c.verified && c.verified !== 'verified' ? h('span', { class: 'bad' }, ' ' + c.verified) : '')))));
+      h('div', {}, h('span', { class: c.flag ? 'flag-' + c.flag : 'mut' }, c.flag ? { good: '✔ Bueno', bad: '✖ Malo', hold: '● Pendiente', circled: '◯ Circled' }[c.flag] : ''), c.rating ? h('span', { class: 'warn' }, ' ' + '★'.repeat(c.rating)) : '', c.verified && c.verified !== 'verified' ? h('span', { class: 'bad' }, ' ' + c.verified) : '')))));
 }
 function selectClip(c, idx, e) {
   const L = state.lib;
@@ -268,7 +264,7 @@ function drawInspector() {
   const reuse = one && state.playerClipId === one.id && state.playerHost;
   const kids = [h('div', { id: 'player' }, reuse ? state.playerHost : one?.kind === 'video' ? h('button', { class: 'btn', onclick: () => play(one) }, 'Reproducir') : '')];
   kids.push(h('h2', {}, one ? one.name : `${sel.length} clips`));
-  kids.push(h('div', { class: 'row' }, ...[['good', '✔ Bueno'], ['bad', '✖ Malo'], ['hold', '● Pend.'], ['', 'Quitar']].map(([f, l]) => h('button', { class: 'btn', onclick: () => patch({ flag: f }) }, l))));
+  kids.push(h('div', { class: 'row' }, ...[['good', '✔ Bueno'], ['bad', '✖ Malo'], ['hold', '● Pend.'], ['circled', '◯ Circled'], ['', 'Quitar']].map(([f, l]) => h('button', { class: 'btn', onclick: () => patch({ flag: f }) }, l))));
   kids.push(h('div', { class: 'stars', style: 'margin:6px 0' }, ...[1, 2, 3, 4, 5].map((n) => h('button', { class: one && one.rating >= n ? 'on' : '', 'aria-label': n + ' estrellas', onclick: () => patch({ rating: one && one.rating === n ? 0 : n }) }, '★'))));
   kids.push(h('div', { class: 'colors' }, ...COLORS.map((c) => h('button', { 'aria-label': 'Color ' + (c || 'ninguno'), style: `background:${c || 'transparent'};border-color:${one && one.color === c ? '#fff' : c ? 'transparent' : '#444'}`, onclick: () => patch({ color: c }) }))));
   kids.push(h('div', { class: 'row', style: 'margin-top:10px' }, field('Escena', 'scene', '30%'), field('Plano', 'shot', '30%'), field('Toma', 'take', '30%')));
@@ -351,6 +347,9 @@ async function viewTranscode() {
       h('div', { class: 'row' }, h('button', { class: 'btn', onclick: async () => { const [p] = await api.invoke('dialog:folder', false); if (p) { t.dir = p; render(); } } }, 'Carpeta de salida…'), h('span', { class: 'mono mut' }, t.dir || 'Documentos/Cinestack Transcodes')),
       h('div', {}, h('button', { class: 'btn primary', disabled: !ids.length, onclick: () => { api.invoke('transcode:start', ids, { ...t, height: t.height ? Number(t.height) : undefined, lut: t.lut || undefined, dir: t.dir || undefined }); toast('Transcodificación en cola'); } }, 'Iniciar'),
         h('button', { class: 'btn', disabled: ids.length < 2, title: 'Une los clips en un solo fichero', onclick: async () => { try { toast('Creando clip combinado…'); const f = await api.invoke('combine:run', ids, t.preset, t.height ? Number(t.height) : undefined); toast('Clip combinado: ' + f); api.invoke('shell:reveal', f); } catch (e) { toast('Error: ' + e.message); } } }, 'Unir en un clip'))));
+  if (state.tcResults?.length) main.append(h('h2', {}, 'Último resultado'), h('div', { class: 'card', style: 'padding:0' }, h('table', {}, h('thead', {}, h('tr', {}, ...['Clip', 'Resultado', 'Tamaño', 'Fichero'].map((x) => h('th', {}, x)))),
+    h('tbody', {}, ...state.tcResults.map((r) => h('tr', {}, h('td', {}, r.name), h('td', { class: r.error ? 'bad' : 'ok' }, r.error ? r.error : 'Correcto'), h('td', {}, r.size ? fmtBytes(r.size) : '—'), h('td', { class: 'mono mut', style: 'word-break:break-all' }, r.out || '—')))))),
+    state.tcResults.some((r) => r.out) ? h('button', { class: 'btn', style: 'margin-top:8px', onclick: () => api.invoke('shell:reveal', state.tcResults.find((r) => r.out).out) }, 'Mostrar en carpeta') : '',
+    state.tcResults.some((r) => r.error) ? h('div', { class: 'mut', style: 'margin-top:6px' }, 'Registro de errores: ' + state.tcLog) : '');
 }
 
-render();

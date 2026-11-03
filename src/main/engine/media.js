@@ -42,7 +42,20 @@ async function probe(file) {
   const v = j.streams.find((s) => s.codec_type === 'video' && s.disposition?.attached_pic !== 1);
   const a = j.streams.filter((s) => s.codec_type === 'audio');
   const tc = j.format?.tags?.timecode || v?.tags?.timecode || j.streams.find((s) => s.tags?.timecode)?.tags?.timecode || null;
+  // etiquetas del contenedor y de los streams (en minusculas) para extraer datos de camara cuando existen
+  const tags = {}; const put = (o) => { for (const [k, val] of Object.entries(o || {})) tags[k.toLowerCase()] = String(val).slice(0, 200); };
+  put(j.format?.tags); put(v?.tags); a.forEach((s) => put(s.tags));
+  const pick = (re) => { const k = Object.keys(tags).find((x) => re.test(x)); return k ? tags[k] : null; };
+  const camera = {
+    make: pick(/^(make|manufacturer|com\.apple\.proapps\.manufacturer)$/), model: pick(/(^model$|camera.*model|com\.apple\.proapps\.model)/),
+    iso: pick(/(^iso$|iso_speed|exposure_?index|iso_?setting)/), isoNative: pick(/(native.*iso|iso.*native)/), wb: pick(/white.?balance|color.?temp/), shutter: pick(/shutter/),
+    nd: pick(/nd.?filter/), lens: pick(/lens/), sensorFps: pick(/sensor.?fps|capture.?fps|sensor_frame/), rawColorSpace: pick(/raw.*color|color.?space/),
+  };
   return {
+    audioCodec: a[0]?.codec_name || null,
+    tcFormat: tc ? (tc.includes(';') ? 'DF' : 'NDF') : null,
+    tags: Object.keys(tags).length > 60 ? undefined : tags,
+    camera,
     container: j.format?.format_name,
     duration: Number(j.format?.duration) || null,
     bitrate: Number(j.format?.bit_rate) || null,
@@ -113,18 +126,29 @@ async function transcode(input, output, opts) {
     }
     vf.push(...parts);
   }
-  const args = ['-v', 'error', '-y', '-i', input, '-map', '0:v:0', '-map', '0:a?', ...(vf.length ? ['-vf', vf.join(',')] : []), ...preset.args, '-progress', 'pipe:1', '-nostats', output];
-  await new Promise((resolve, reject) => {
-    const p = spawn(FFMPEG, args, { windowsHide: true, signal: opts.signal });
-    let err = '';
-    p.stderr.on('data', (d) => (err += d));
-    p.stdout.on('data', (d) => {
-      const m = /out_time_us=(\d+)/.exec(String(d));
-      if (m && opts.duration) opts.onProgress?.(Math.min(1, Number(m[1]) / 1e6 / opts.duration));
+  // Se escribe a un fichero temporal y solo se renombra si ffmpeg termina bien y el resultado tiene tamano: nunca queda un clip vacio.
+  const tmp = path.join(path.dirname(output), `.${path.basename(output, path.extname(output))}.partial${path.extname(output)}`);
+  const args = ['-v', 'error', '-y', '-i', input, '-map', '0:v:0', '-map', '0:a?', ...(vf.length ? ['-vf', vf.join(',')] : []), ...preset.args, '-progress', 'pipe:1', '-nostats', tmp];
+  try {
+    await new Promise((resolve, reject) => {
+      const p = spawn(FFMPEG, args, { windowsHide: true, signal: opts.signal });
+      let err = '';
+      p.stderr.on('data', (d) => (err += d));
+      p.stdout.on('data', (d) => {
+        const m = /out_time_us=(\d+)/.exec(String(d));
+        if (m && opts.duration) opts.onProgress?.(Math.min(1, Number(m[1]) / 1e6 / opts.duration));
+      });
+      p.on('error', (e) => reject(new Error(`No se pudo ejecutar ffmpeg (${e.code || e.message}) en ${FFMPEG}`)));
+      p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(err.trim().split('\n').slice(-4).join('\n') || `ffmpeg salió con código ${code}`))));
     });
-    p.on('error', reject);
-    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(err.trim().split('\n').slice(-3).join('\n') || `ffmpeg salio con ${code}`))));
-  });
+    const st = await fsp.stat(tmp);
+    if (!st.size) throw new Error('ffmpeg terminó pero el fichero resultante está vacío');
+    await fsp.rm(output, { force: true });
+    await fsp.rename(tmp, output);
+  } catch (e) {
+    await fsp.rm(tmp, { force: true });
+    throw e;
+  }
   return output;
 }
 

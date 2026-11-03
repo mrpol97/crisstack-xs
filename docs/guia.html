@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>CrisStack XS — Guía rápida</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body { font: 10.5pt/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: #1b1e24; margin: 0; }
+  h1 { font-size: 26pt; margin: 0 0 2pt; letter-spacing: -.01em; }
+  h2 { font-size: 15pt; margin: 22pt 0 6pt; padding-bottom: 4pt; border-bottom: 2px solid #4c8dff; break-after: avoid; }
+  h3 { font-size: 11.5pt; margin: 12pt 0 3pt; break-after: avoid; }
+  p { margin: 0 0 7pt; }
+  .sub { color: #4a5260; font-size: 12pt; margin-bottom: 14pt; }
+  .cover { padding: 6pt 0 14pt; border-bottom: 1px solid #d9dce1; margin-bottom: 8pt; }
+  .tag { display: inline-block; background: #eaf1ff; color: #2456b8; border-radius: 10pt; padding: 1pt 8pt; font-size: 9pt; font-weight: 600; margin-right: 4pt; }
+  ol, ul { margin: 0 0 8pt; padding-left: 18pt; } li { margin: 2pt 0; }
+  figure { margin: 8pt 0 12pt; break-inside: avoid; }
+  figure img { width: 100%; border: 1px solid #d9dce1; border-radius: 6pt; display: block; }
+  figcaption { color: #4a5260; font-size: 9pt; margin-top: 3pt; }
+  table { border-collapse: collapse; width: 100%; margin: 4pt 0 10pt; font-size: 9.5pt; break-inside: avoid; }
+  th, td { text-align: left; padding: 4pt 7pt; border-bottom: 1px solid #e3e6ea; vertical-align: top; }
+  th { background: #f4f6f9; font-weight: 600; }
+  kbd { font: 9pt ui-monospace, Consolas, monospace; background: #f1f3f6; border: 1px solid #d3d7de; border-bottom-width: 2px; border-radius: 4pt; padding: 0 5pt; }
+  .note { background: #fff8e6; border-left: 3px solid #f0b13c; padding: 6pt 9pt; border-radius: 0 5pt 5pt 0; margin: 8pt 0; break-inside: avoid; }
+  .ok { background: #eafaf1; border-left-color: #34c47c; }
+  code { font: 9.5pt ui-monospace, Consolas, monospace; background: #f1f3f6; padding: 0 3pt; border-radius: 3pt; }
+  .pb { break-before: page; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>CrisStack XS</h1>
+  <div class="sub">Guía rápida de uso · versión 0.3</div>
+  <span class="tag">Offload verificado</span><span class="tag">Biblioteca</span><span class="tag">Color</span><span class="tag">Informes</span><span class="tag">Transcodificación</span>
+</div>
+
+<p>CrisStack XS es una herramienta de DIT / gestión de datos de rodaje: copia las tarjetas de cámara a varios destinos comprobando cada fichero con un checksum, ordena el material en una biblioteca con sus metadatos, permite revisarlo con el look aplicado, genera informes y prepara las copias de trabajo.</p>
+
+<h2>1. Primeros pasos: crear el proyecto</h2>
+<p>Todo cuelga de un <b>proyecto</b>. Su ficha se rellena una vez y se reutiliza en el offload, en la lista MHL y en la cabecera de los informes.</p>
+<ol>
+  <li>En la barra superior abre el selector de proyecto y elige <b>＋ Nuevo proyecto…</b> (o pulsa <b>Crear</b> en el panel izquierdo de la biblioteca).</li>
+  <li>Rellena el <b>nombre</b> (obligatorio) y, si quieres, director, director de fotografía, ayudantes de cámara, DIT, data manager, sonido, script, productor, productora, localización y copyright.</li>
+  <li>Pulsa <b>Elegir logo…</b> para añadir el logo de la producción (PNG, JPG, SVG o WebP, máx. 1,5 MB). Saldrá en los informes junto al nombre de la productora.</li>
+</ol>
+<figure><img src="img/n0-proyecto.png" alt="Formulario de nuevo proyecto"><figcaption>Ficha del proyecto.</figcaption></figure>
+<div class="note ok"><b>Puedes cambiarlo siempre:</b> en la biblioteca, el panel de la izquierda muestra el proyecto con un botón <b>Editar</b>. Los cambios se reflejan al momento en el offload y en los informes nuevos.</div>
+
+<h2 class="pb">2. Meter material: Offload o Importar</h2>
+<h3>Offload (copiar una tarjeta)</h3>
+<ol>
+  <li>Abre <b>Offload</b> en la barra superior.</li>
+  <li>Añade el <b>origen</b> (la tarjeta o carpeta) y uno o más <b>destinos</b>. Con varios destinos se hace backup redundante a la vez.</li>
+  <li>El <b>proyecto</b> sale enlazado automáticamente. Indica cámara y día de rodaje.</li>
+  <li>Elige la estructura de carpetas con comodines, por ejemplo <code>{project}/Dia_{day}/{camera}_{reel}</code>. El ejemplo debajo te muestra cómo quedará.</li>
+  <li>Marca los hashes (XXH64 recomendado), «Releer y verificar destinos» y «Escribir lista MHL». Opcionalmente un informe y una transcodificación al terminar.</li>
+  <li>Pulsa <b>Iniciar offload</b>. Cada fichero se lee una vez, se escribe en todos los destinos y después se vuelve a leer cada copia para compararla con el original.</li>
+</ol>
+<figure><img src="img/v-offload.png" alt="Offload con proyecto enlazado"><figcaption>Offload: el proyecto activo aparece enlazado, con su equipo.</figcaption></figure>
+<h3>Importar (material que ya tienes en disco)</h3>
+<p>En la biblioteca pulsa <b>Importar carpetas…</b> (o <b>Ficheros…</b>). No copia nada: registra los ficheros en la biblioteca <b>conservando la estructura de carpetas</b> original. Si importas dos veces la misma carpeta, no se duplican los clips.</p>
+
+<h2 class="pb">3. La biblioteca</h2>
+<h3>Árbol de carpetas</h3>
+<p>A la izquierda ves todo el material como un árbol de carpetas (proyecto → día → cámara → tarjeta…). Haz clic en una carpeta para ver sus clips, incluidos los de las subcarpetas. La flecha ▾ plega y despliega.</p>
+<h3>Tres vistas</h3>
+<table>
+  <tr><th>Vista</th><th>Para qué sirve</th></tr>
+  <tr><td><b>Lista</b></td><td>Tabla con todas las columnas de metadatos. Se ordena haciendo clic en la cabecera.</td></tr>
+  <tr><td><b>Miniaturas</b></td><td>Cuadrícula de miniaturas para revisar rápido. Doble clic para reproducir.</td></tr>
+  <tr><td><b>Carpetas</b></td><td>Resumen por carpeta: cuántos clips tiene, tamaño total, y cuántos son vídeo, audio o imágenes, más la duración. Clic en una tarjeta para entrar.</td></tr>
+</table>
+<figure><img src="img/n1-lista.png" alt="Vista lista"><figcaption>Vista lista con árbol de carpetas, flags, valoración y vista previa.</figcaption></figure>
+<figure><img src="img/n2-carpetas.png" alt="Vista carpetas"><figcaption>Vista de carpetas: clips, tamaño y tipos de cada una.</figcaption></figure>
+
+<h3 class="pb">Columnas de la lista</h3>
+<p>Pulsa <b>Columnas…</b> para elegir cuáles ver. Disponibles: flag (marca, incluido <i>circled</i>), rating, preview, nombre, duración, frames, cámara, ISO, WB, shutter, shutter angle, sensor FPS, filtro ND, FPS del proyecto, modelo de lente, códec, tipo de fichero, resolución, fecha de registro, formato de TC, TC inicio, TC final, ShotID, reel/tape, fecha de grabación, fabricante, pistas de audio, tamaño, información de look, Camera T, ISO nativo, espacio de color RAW, códec de audio, volúmenes, backups, escena, plano, toma y notas.</p>
+<ul>
+  <li><b>Editar una celda:</b> doble clic en una celda subrayada al pasar el ratón, escribe y pulsa <kbd>Enter</kbd>. Los datos de cámara (ISO, WB, shutter, lente…) se rellenan solos cuando el fichero los trae; si no, los escribes tú.</li>
+  <li><b>Añadir más celdas:</b> en <b>Columnas…</b> escribe el nombre de una columna nueva y pulsa <b>Añadir columna</b>. Se puede editar en la lista y viaja con la exportación.</li>
+  <li><b>Exportar metadatos:</b> el botón <b>CSV</b> exporta las columnas que tengas visibles (de los clips seleccionados, o de todos). La exportación Avid ALE incluye también ISO, WB, shutter, lente y tus columnas propias.</li>
+</ul>
+<div class="note">Los datos «Backups» y «Volúmenes» se rellenan en los clips que entran por Offload (cuántas copias verificadas hay y de qué tarjeta vienen). En los importados, Backups es 0.</div>
+
+<h2 class="pb">4. Revisar: reproducción, color y QC</h2>
+<p>Doble clic en un clip para reproducirlo en el panel derecho. Debajo del reproductor tienes:</p>
+<ul>
+  <li><b>Color falso, Zebra, Clipping y Peaking</b> para exposición y foco.</li>
+  <li><b>Líneas de encuadre</b> (2.39, 2:1, 1.85, 16:9, 4:3, 1:1, 9:16) y <b>Scopes</b> (waveform, histograma, vectorscopio).</li>
+  <li><b>Fotograma</b> guarda un still con el look aplicado; <b>Miniatura</b> usa el fotograma actual como miniatura del clip.</li>
+</ul>
+<p>En la sección <b>Color y transformación</b> del inspector ajustas CDL (slope, offset, power, saturación), cargas una LUT <code>.cube</code>, copias y pegas looks entre clips y los guardas en la biblioteca. También desqueeze, espejo, rotación y recorte. El botón <b>QC</b> de la barra superior da más espacio al reproductor.</p>
+<figure><img src="img/3b-player-fx.png" alt="Reproductor"><figcaption>Reproductor con color falso, scopes y líneas de encuadre.</figcaption></figure>
+
+<h2 class="pb">5. Transcodificar</h2>
+<ol>
+  <li>Selecciona uno o varios clips en la biblioteca y abre <b>Transcodificar</b> (si no seleccionas ninguno, se usan todos los de vídeo).</li>
+  <li>Elige el preset (ProRes, DNxHR, H.264, H.265), la altura opcional, LUT, timecode o nombre quemados, y si se aplican los looks de cada clip.</li>
+  <li>Pulsa <b>Iniciar</b>. El progreso se ve en la barra inferior.</li>
+</ol>
+<p>El resultado se registra automáticamente en la carpeta <b>Transcodes</b> de la biblioteca, con su información y tamaño reales. Al terminar, la pantalla muestra una tabla por clip: <span style="color:#146c3a"><b>Correcto</b></span> con el tamaño y la ruta, o el motivo exacto del error. Un fichero solo se da por bueno si ffmpeg termina y tiene contenido; nunca queda un clip vacío. Los errores se guardan además en <code>transcode.log</code>.</p>
+<figure><img src="img/n5-transcode.png" alt="Transcodificar"><figcaption>Transcodificación con tabla de resultados.</figcaption></figure>
+
+<h2 class="pb">6. Informes e intercambio</h2>
+<ul>
+  <li><b>Informes</b> (PDF o HTML): día de rodaje, clips, miniaturas, contact print y volumen/checksums. La cabecera lleva el logo, la productora, el equipo y, al pie, el copyright del proyecto.</li>
+  <li><b>Intercambio:</b> exporta a Avid ALE, Premiere/FCP7 XML, FCPXML (Final Cut Pro X y Resolve), CDL (.ccc), EDL y CSV; e importa hojas de rodaje en CSV o ALE emparejando por nombre, timecode o escena/plano/toma.</li>
+  <li><b>Archivo:</b> sellado ASC MHL con historial, relink de ficheros movidos, detección de secuencias de imagen y subida a S3.</li>
+  <li><b>Verificar:</b> comprueba una carpeta ya copiada contra su lista MHL.</li>
+</ul>
+
+<h2>7. Atajos de teclado</h2>
+<table>
+  <tr><th>Tecla</th><th>Acción</th></tr>
+  <tr><td><kbd>G</kbd> <kbd>B</kbd> <kbd>H</kbd> <kbd>0</kbd></td><td>Marcar bueno, malo, pendiente o quitar marca (en la selección)</td></tr>
+  <tr><td><kbd>1</kbd>–<kbd>5</kbd></td><td>Valoración de 1 a 5 estrellas</td></tr>
+  <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Clip anterior / siguiente</td></tr>
+  <tr><td><kbd>K</kbd> / <kbd>Espacio</kbd></td><td>Reproducir / pausa</td></tr>
+  <tr><td><kbd>J</kbd> <kbd>L</kbd></td><td>Retroceder 5 s / avance rápido</td></tr>
+  <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Un fotograma atrás / adelante</td></tr>
+  <tr><td><kbd>Esc</kbd></td><td>Cerrar la ventana abierta y volver a la biblioteca</td></tr>
+</table>
+<p>Los atajos de la biblioteca se pueden cambiar en <b>Ajustes → Atajos de teclado</b>.</p>
+
+<h2>8. Si algo no va bien</h2>
+<table>
+  <tr><th>Síntoma</th><th>Qué hacer</th></tr>
+  <tr><td>macOS dice que la app «está dañada» o no deja abrirla</td><td>Clic derecho → <b>Abrir</b>. Si persiste, en Terminal: <code>xattr -cr "/Applications/CrisStack XS.app"</code> (la app no está firmada con certificado de Apple).</td></tr>
+  <tr><td>Un clip no se transcodifica</td><td>Mira la tabla de «Último resultado» en <b>Transcodificar</b>: indica el motivo (fichero original no encontrado, no es vídeo, error de ffmpeg…). Si falta el original, usa <b>Archivo → Relink</b>.</td></tr>
+  <tr><td>ISO, WB o lente salen vacíos</td><td>Esos datos solo aparecen si el fichero los incluye. Escríbelos a mano en la lista (doble clic).</td></tr>
+  <tr><td>Un offload termina con fallos de verificación</td><td>Revisa la pestaña <b>Trabajos</b> y repite la copia del fichero afectado: el fallo indica que la copia no coincide con el original.</td></tr>
+</table>
+
+<div class="note"><b>Limitaciones conocidas:</b> sin salida SDI ni LTFS; las subidas a Frame.io, Sony Ci, Webgate y COPRA no están disponibles; los datos de cámara se leen de los metadatos que ffprobe encuentra y no de los formatos RAW propietarios.</div>
+
+</body>
+</html>

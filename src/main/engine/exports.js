@@ -9,13 +9,13 @@ const framesToTc = (n, fps) => { const r = Math.round(fps); const f = n % r, s =
 const clipFps = (c, d = 25) => c.meta?.fps || d;
 const clipFrames = (c) => Math.max(1, Math.round((c.meta?.duration || 0) * clipFps(c)));
 
-function toAle(clips, fps = 25) {
-  const cols = ['Name', 'Tracks', 'Start', 'End', 'Duration', 'Tape', 'Source File', 'Scene', 'Shoot', 'Take', 'Camera', 'Comments', 'Flag', 'ASC_SOP', 'ASC_SAT'];
+function toAle(clips, fps = 25, customFields = []) {
+  const cols = ['Name', 'Tracks', 'Start', 'End', 'Duration', 'Tape', 'Source File', 'Scene', 'Shoot', 'Take', 'Camera', 'Comments', 'Flag', 'ASC_SOP', 'ASC_SAT', 'Shot', 'ShotID', 'ISO', 'WB', 'Shutter', 'Lens', ...customFields];
   const head = ['Heading', 'FIELD_DELIM\tTABS', 'VIDEO_FORMAT\t1080', 'AUDIO_FORMAT\t48khz', `FPS\t${fps}`, '', 'Column', cols.join('\t'), '', 'Data'];
   const rows = clips.filter((c) => c.kind === 'video').map((c) => {
     const f = clipFps(c, fps), s = tcToFrames(c.meta?.timecode, f), n = clipFrames(c), cdl = c.look?.cdl;
     const sop = cdl ? `(${cdl.slope.join(' ')})(${cdl.offset.join(' ')})(${cdl.power.join(' ')})` : '';
-    return [c.name.replace(/\.[^.]+$/, ''), c.meta?.audioTracks ? 'VA1A2' : 'V', c.meta?.timecode || '00:00:00:00', framesToTc(s + n, f), framesToTc(n, f), c.reel || '', c.name, c.scene, '', c.take, c.camera, (c.notes || '').replace(/[\t\r\n]+/g, ' '), c.flag, sop, cdl ? cdl.sat : ''].join('\t');
+    return [c.name.replace(/\.[^.]+$/, ''), c.meta?.audioTracks ? 'VA1A2' : 'V', c.meta?.timecode || '00:00:00:00', framesToTc(s + n, f), framesToTc(n, f), c.reel || '', c.name, c.scene, '', c.take, c.camera, (c.notes || '').replace(/[\t\r\n]+/g, ' '), c.flag, sop, cdl ? cdl.sat : '', c.shot || '', c.shotId || '', c.cam?.iso ?? c.meta?.camera?.iso ?? '', c.cam?.wb ?? c.meta?.camera?.wb ?? '', c.cam?.shutter ?? c.meta?.camera?.shutter ?? '', c.cam?.lens ?? c.meta?.camera?.lens ?? '', ...customFields.map((k) => String(c.custom?.[k] ?? '').replace(/[\t\r\n]+/g, ' '))].join('\t');
   });
   return [...head, ...rows, ''].join('\n');
 }
