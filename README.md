@@ -46,6 +46,22 @@ La primera vez, macOS pedirá abrirla con clic derecho → Abrir (no está firma
 - **Transcodificar**: ProRes Proxy/422/HQ, DNxHR LB/SQ, H.264, H.265; escalado, LUT `.cube`,
   timecode y nombre quemados; puede lanzarse automáticamente tras el offload.
 
+## Novedades v0.5
+
+- **LUTs guardadas**: las LUT que importas se copian a la app y salen en una lista desplegable en el color de cada clip, en «LUT…» y en
+  Transcodificar; se pueden renombrar, quitar o importar por carpetas. Las LUT 1D se convierten a 3D.
+- **Paneles flotantes**: el reproductor y el panel de color se pueden separar de la columna derecha, mover y redimensionar donde quieras
+  (se recuerda la posición).
+- **Textos en pantalla** en el transcode: timecode, nombre del clip y todos los textos propios que quieras, con datos del clip
+  (`{scene}`, `{take}`…), tamaño, color y fondo; se **arrastran sobre la previsualización**. Fuente incluida en la app (DejaVu Sans).
+- **Miniaturas con el look** del clip (LUT, color y transformación) en lista y miniaturas.
+- **Stills por escena**: nuevo espacio con tira de fotogramas para elegir el momento, stills con el look agrupados por escena, notas,
+  informe PDF y miniatura del clip a elegir.
+- Arreglos: los botones **Modo revisión (QC)** y **Ajustes** no se podían pulsar en Mac (estaban en la zona de arrastre de la ventana);
+  la previsualización de transcode fallaba con un recorte de ancho/alto 0 («Failed to inject frame into filter network») y los errores
+  de ffmpeg ahora se explican; reproducir un clip sin fichero da un mensaje claro y permite quitarlo (**Comprobar ficheros**);
+  el modo revisión tenía la maqueta rota; las miniaturas se aplastaban con muchos clips.
+
 ## Novedades v0.4
 
 - **Offload**: orígenes de cámara o de sonido (cada uno con su plantilla: Día 1 → Camara_A y Sonido), copia de **ficheros sueltos**,

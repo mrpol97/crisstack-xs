@@ -28,17 +28,40 @@ function cdlToCube(cdl, size = 33, title = 'Cinestack CDL') {
 }
 
 function parseCube(text) {
-  let size = 0; const data = []; let dmin = [0, 0, 0], dmax = [1, 1, 1];
+  let size = 0, size1 = 0; const data = []; let dmin = [0, 0, 0], dmax = [1, 1, 1];
   for (const raw of text.split(/\r?\n/)) {
     const l = raw.trim(); if (!l || l.startsWith('#')) continue;
     if (l.startsWith('LUT_3D_SIZE')) size = Number(l.split(/\s+/)[1]);
+    else if (l.startsWith('LUT_1D_SIZE')) size1 = Number(l.split(/\s+/)[1]);
     else if (l.startsWith('DOMAIN_MIN')) dmin = l.split(/\s+/).slice(1).map(Number);
     else if (l.startsWith('DOMAIN_MAX')) dmax = l.split(/\s+/).slice(1).map(Number);
     else if (/^[-\d.]/.test(l)) data.push(...l.split(/\s+/).map(Number));
   }
-  if (!size || data.length !== size ** 3 * 3) throw new Error('Fichero .cube invalido o LUT 1D no soportada');
+  if (!size && size1 > 1 && data.length === size1 * 3) return expand1d(size1, data); // LUT 1D: se convierte a 3D
+  if (!size || data.length !== size ** 3 * 3 || data.some((v) => !Number.isFinite(v))) throw new Error('Fichero .cube no válido (se esperaba una LUT 3D o 1D con todos sus valores)');
   return { size, data: Float32Array.from(data), dmin, dmax };
 }
+
+/** LUT 1D (una curva por canal) convertida a un cubo 3D de 33 puntos: cada canal sale de su propia curva. */
+function expand1d(n, curve, size = 33) {
+  const at = (ch, v) => { const p = Math.min(1, Math.max(0, v)) * (n - 1); const i = Math.min(n - 2, Math.floor(p)); const f = p - i; return curve[i * 3 + ch] * (1 - f) + curve[(i + 1) * 3 + ch] * f; };
+  const data = [];
+  for (let b = 0; b < size; b++) for (let g = 0; g < size; g++) for (let r = 0; r < size; r++) data.push(at(0, r / (size - 1)), at(1, g / (size - 1)), at(2, b / (size - 1)));
+  return { size, data: Float32Array.from(data), dmin: [0, 0, 0], dmax: [1, 1, 1] };
+}
+
+/**
+ * Devuelve el texto de una LUT lista para ffmpeg y el reproductor, siempre en un formato limpio (ffmpeg no entiende todas las lineas
+ * extra que escriben otros programas): las 3D se reescriben tal cual y las 1D se convierten a 3D.
+ */
+function normalizeCube(text) {
+  const c = parseCube(text);
+  const converted = !/^\s*LUT_3D_SIZE/m.test(text);
+  const lines = [`TITLE "${converted ? 'LUT 1D convertida' : 'LUT'}"`, `LUT_3D_SIZE ${c.size}`, `DOMAIN_MIN ${c.dmin.join(' ')}`, `DOMAIN_MAX ${c.dmax.join(' ')}`];
+  for (let i = 0; i < c.data.length; i += 3) lines.push(`${c.data[i].toFixed(6)} ${c.data[i + 1].toFixed(6)} ${c.data[i + 2].toFixed(6)}`);
+  return { text: lines.join('\n') + '\n', size: c.size, converted };
+}
+
 
 const f3 = (a) => a.map((v) => +v.toFixed(6)).join(' ');
 function cdlToXml(cdl, id = 'look') {
@@ -77,4 +100,4 @@ async function buildFfmpegLooks(look, tmpDir) {
   return luts;
 }
 
-module.exports = { IDENTITY, applyCdl, isIdentity, cdlToCube, parseCube, cdlToXml, writeCcc, parseCdlXml, buildFfmpegLooks };
+module.exports = { IDENTITY, applyCdl, isIdentity, cdlToCube, parseCube, normalizeCube, cdlToXml, writeCcc, parseCdlXml, buildFfmpegLooks };

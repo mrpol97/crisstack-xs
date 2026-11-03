@@ -40,9 +40,12 @@ function go(view) {
   render();
 }
 const views = { jobs: viewJobs, library: viewLibrary, verify: viewVerify }; // offload, transcode e informes se registran en app4.js
-const SHEET_TITLES = { offload: 'Offload y workflow', jobs: 'Trabajos', compare: 'Comparar', audio: 'Audio', exchange: 'Intercambio', archive: 'Archivo', verify: 'Verificar', reports: 'Informes', transcode: 'Transcodificar', settings: 'Ajustes' };
+const SHEET_TITLES = { offload: 'Offload y workflow', jobs: 'Trabajos', compare: 'Comparar', audio: 'Audio', exchange: 'Intercambio', archive: 'Archivo', verify: 'Verificar', reports: 'Informes', transcode: 'Transcodificar', settings: 'Ajustes', stills: 'Stills por escena' };
 function setSheet(open, title) { $('#sheet').hidden = !open; if (open) $('#sheetTitle').textContent = title || ''; }
-async function render() {
+let renderChain = Promise.resolve();
+function render() { renderChain = renderChain.then(doRender, doRender); return renderChain; } // una vista termina de dibujarse antes de empezar la siguiente
+async function doRender() {
+  if (typeof floatsVisible === 'function') floatsVisible(state.view === 'library');
   if (state.view === 'library') { setSheet(false); await Promise.all([viewLibrary(), drawProjects()]); return; }
   setSheet(true, SHEET_TITLES[state.view]); main.replaceChildren(); main.scrollTop = 0; await views[state.view]();
 }
@@ -60,7 +63,8 @@ $('#projectSel').addEventListener('change', async (e) => {
   await api.invoke('project:switch', e.target.value); state.lib.sel.clear(); state.lib.bin = state.lib.smart = null; state.playerClipId = null; toast('Proyecto: ' + e.target.selectedOptions[0].textContent); render();
 });
 try { if (localStorage.getItem('cine.qc') === '1') document.body.classList.add('qc'); } catch { /* sin storage */ }
-$('#qcBtn').addEventListener('click', () => { const on = document.body.classList.toggle('qc'); try { localStorage.setItem('cine.qc', on ? '1' : '0'); } catch { /* */ } });
+$('#qcBtn').setAttribute('aria-pressed', String(document.body.classList.contains('qc')));
+$('#qcBtn').addEventListener('click', () => { const on = document.body.classList.toggle('qc'); $('#qcBtn').setAttribute('aria-pressed', String(on)); try { localStorage.setItem('cine.qc', on ? '1' : '0'); } catch { /* */ } });
 
 /* barra de trabajos (abajo): resumen de lo que esta corriendo */
 function drawJobsBar() {
@@ -137,7 +141,7 @@ function drawGrid(grid) {
   const L = state.lib;
   if (!L.clips.length) return grid.replaceChildren(h('div', { class: 'empty', style: 'grid-column:1/-1' }, 'No hay clips. Haz un offload o cambia el filtro.'));
   grid.replaceChildren(...L.clips.map((c, idx) => h('div', { class: 'clip' + (L.sel.has(c.id) ? ' sel' : ''), tabindex: 0, onclick: (e) => selectClip(c, idx, e), ondblclick: () => play(c) },
-    h('div', { class: 'th' }, c.thumb ? h('img', { src: `cine://thumb/${c.id}`, alt: '', loading: 'lazy' }) : (c.kind === 'video' ? 'Analizando…' : c.kind)),
+    h('div', { class: 'th' }, c.thumb ? h('img', { src: thumbSrc(c), alt: '', loading: 'lazy' }) : (c.kind === 'video' ? 'Analizando…' : c.kind)),
     h('div', { class: 'meta' }, h('b', { title: c.name }, c.name),
       h('span', { class: 'mut' }, [c.meta?.width ? `${c.meta.width}×${c.meta.height}` : '', c.meta?.fps ? `${+c.meta.fps.toFixed(2)}p` : '', fmtDur(c.meta?.duration)].filter(Boolean).join(' · ') || fmtBytes(c.size)),
       h('div', {}, h('span', { class: c.flag ? 'flag-' + c.flag : 'mut' }, c.flag ? { good: '✔ Bueno', bad: '✖ Malo', hold: '● Pendiente', circled: '◯ Circled' }[c.flag] : ''), c.rating ? h('span', { class: 'warn' }, ' ' + '★'.repeat(c.rating)) : '', c.verified && c.verified !== 'verified' ? h('span', { class: 'bad' }, ' ' + c.verified) : '')))));
@@ -160,28 +164,33 @@ async function play(c) {
     const p = state.player = new CinePlayer(host, { fps: c.meta?.fps });
     p.load(s.url); p.setLook(c.look); p.setTransform(c.transform || {});
     if (c.look?.lut) p.setLut(await api.invoke('lut:read', c.look.lut)).catch?.(() => {});
-    p.onStill = async (t) => { try { toast('Still guardado: ' + await api.invoke('still:export', c.id, t, 'jpeg')); } catch (e) { toast('Error: ' + e.message); } };
-    p.onThumb = async (t) => { await api.invoke('thumb:set', c.id, t); toast('Miniatura actualizada'); refreshClips(); };
+    p.onStill = async (t) => { try { const r = await api.invoke('stills:capture', { clipId: c.id, t }); toast(`Still guardado en ${r.scene ? 'la escena ' + r.scene : 'Sin escena'}. Míralo en Stills.`); } catch (e) { toast('Error: ' + errText(e)); } };
+    p.onThumb = async (t) => { try { await api.invoke('thumb:set', c.id, t); toast('Miniatura actualizada'); refreshClips(); } catch (e) { toast('Error: ' + errText(e)); } };
     p.video.play().catch(() => {});
-  } catch (err) { box.replaceChildren(h('div', { class: 'bad' }, err.message)); }
+  } catch (err) {
+    box.replaceChildren(h('div', { class: 'bad' }, errText(err)), h('div', { class: 'row', style: 'margin-top:8px' },
+      h('button', { class: 'btn', onclick: () => go('archive') }, 'Ir a Relink'),
+      h('button', { class: 'btn danger', onclick: async () => { if (!confirm(`¿Quitar «${c.name}» de la biblioteca? El fichero no se borra.`)) return; await api.invoke('library:remove', [c.id]); state.lib.sel.delete(c.id); state.playerClipId = null; toast('Clip quitado de la biblioteca'); render(); } }, 'Quitar de la biblioteca')));
+  }
 }
 const COLORS = ['', '#ef5b5b', '#f0b13c', '#34c47c', '#4c8dff', '#8a5cff'];
 function drawInspector() {
   const L = state.lib, box = $('#inspector'); if (!box) return;
   const sel = L.clips.filter((c) => L.sel.has(c.id));
-  if (!sel.length) return box.replaceChildren(h('div', { class: 'empty' }, 'Selecciona un clip. Doble clic para reproducir.'));
+  if (!sel.length) { if (typeof floatsIdle === 'function') floatsIdle(); return box.replaceChildren(h('div', { class: 'empty' }, 'Selecciona un clip. Doble clic para reproducir.')); }
   const one = sel.length === 1 ? sel[0] : null;
   const patch = async (p) => { await api.invoke('library:bulk', sel.map((c) => c.id), p); refreshClips(); };
   const field = (label, key, w) => h('label', { class: 'f', style: w ? `width:${w}` : 'flex:1' }, label, h('input', { type: 'text', value: one ? one[key] ?? '' : '', placeholder: one ? '' : '(varios)', onchange: (e) => patch({ [key]: e.target.value }) }));
   const reuse = one && state.playerClipId === one.id && state.playerHost;
-  const kids = [h('div', { id: 'player' }, reuse ? state.playerHost : one?.kind === 'video' ? h('button', { class: 'btn', onclick: () => play(one) }, 'Reproducir') : '')];
+  const playerBox = h('div', { id: 'player' }, reuse ? state.playerHost : one?.kind === 'video' ? h('button', { class: 'btn', onclick: () => play(one) }, 'Reproducir') : '');
+  const kids = [placePanel('player', 'Reproductor', playerBox)];
   kids.push(h('h2', {}, one ? one.name : `${sel.length} clips`));
   kids.push(h('div', { class: 'row' }, ...[['good', '✔ Bueno'], ['bad', '✖ Malo'], ['hold', '● Pend.'], ['circled', '◯ Circled'], ['', 'Quitar']].map(([f, l]) => h('button', { class: 'btn', onclick: () => patch({ flag: f }) }, l))));
   kids.push(h('div', { class: 'stars', style: 'margin:6px 0' }, ...[1, 2, 3, 4, 5].map((n) => h('button', { class: one && one.rating >= n ? 'on' : '', 'aria-label': n + ' estrellas', onclick: () => patch({ rating: one && one.rating === n ? 0 : n }) }, '★'))));
   kids.push(h('div', { class: 'colors' }, ...COLORS.map((c) => h('button', { 'aria-label': 'Color ' + (c || 'ninguno'), style: `background:${c || 'transparent'};border-color:${one && one.color === c ? '#fff' : c ? 'transparent' : '#444'}`, onclick: () => patch({ color: c }) }))));
   kids.push(h('div', { class: 'row', style: 'margin-top:10px' }, field('Escena', 'scene', '30%'), field('Plano', 'shot', '30%'), field('Toma', 'take', '30%')));
   kids.push(h('div', { class: 'row', style: 'margin-top:8px' }, field('Cámara', 'camera'), field('Reel', 'reel'), field('ShotID', 'shotId')));
-  if (typeof colorPanel === 'function' && sel.some((c) => c.kind === 'video')) kids.push(colorPanel(sel, one));
+  kids.push(placePanel('color', 'Color y transformación', typeof colorPanel === 'function' && sel.some((c) => c.kind === 'video') ? colorPanel(sel, one) : null));
   kids.push(h('label', { class: 'f', style: 'margin-top:8px' }, 'Notas', h('textarea', { onchange: (e) => patch({ notes: e.target.value }) }, one?.notes || '')));
   if (L.fields.length) kids.push(h('h2', {}, 'Campos personalizados'), ...L.fields.map((f) => h('label', { class: 'f', style: 'margin-bottom:6px' }, f, h('input', { type: 'text', value: one?.custom?.[f] ?? '', onchange: (e) => patch({ custom: { [f]: e.target.value } }) }))));
   kids.push(h('button', { class: 'btn', style: 'margin-top:8px', onclick: async () => { const r = await askForm('Campo personalizado', [{ key: 'n', label: 'Nombre del campo' }]); if (r?.n) { await api.invoke('library:fields:add', r.n); render(); } } }, '+ Campo personalizado'));

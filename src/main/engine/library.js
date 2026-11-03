@@ -52,7 +52,7 @@ class Library {
   constructor(store, thumbDir) {
     this.store = store;
     this.thumbDir = thumbDir;
-    for (const [k, v] of [['clips', {}], ['bins', {}], ['smartFolders', []], ['customFields', []], ['jobs', []]]) if (!store.get(k)) store.set(k, v);
+    for (const [k, v] of [['clips', {}], ['bins', {}], ['smartFolders', []], ['customFields', []], ['jobs', []], ['stills', []]]) if (!store.get(k)) store.set(k, v);
   }
 
   get clips() { return this.store.get('clips'); }
@@ -226,6 +226,8 @@ class Library {
   /** Registra salidas de transcode en la carpeta "Transcodes". */
   async registerTranscode(srcClip, outFile, preset, onClip) {
     const st = await require('node:fs/promises').stat(outFile);
+    const prev = Object.values(this.clips).find((c) => c.path === outFile);
+    if (prev) { prev.size = st.size; prev.meta = null; prev.thumb = null; prev.derivedFrom = srcClip?.id || prev.derivedFrom; this.store.save(); this.analyze([prev], onClip); return prev; }
     const bin = this.ensureBinPath(['Transcodes', preset || 'Salida'], { transcodes: true });
     const kind = media.kindOf(outFile) || 'video';
     const clip = this.newClip({ rel: path.basename(outFile), abs: outFile, kind, size: st.size }, bin, {
@@ -235,6 +237,20 @@ class Library {
     this.store.data.clips[clip.id] = clip; this.store.save();
     this.analyze([clip], onClip);
     return clip;
+  }
+
+  /* ---------- stills guardados por escena ---------- */
+  listStills() { return this.store.get('stills') || []; }
+  addStill(rec) { this.store.data.stills = [...this.listStills(), rec]; this.store.save(); return rec; }
+  updateStill(id, patch) {
+    const s = this.listStills().find((x) => x.id === id); if (!s) throw new Error('Still no encontrado');
+    for (const k of ['scene', 'note', 'label']) if (k in patch) s[k] = String(patch[k] ?? '').slice(0, 500);
+    this.store.save(); return s;
+  }
+  removeStill(id) {
+    const s = this.listStills().find((x) => x.id === id);
+    this.store.data.stills = this.listStills().filter((x) => x.id !== id); this.store.save();
+    return s || null;
   }
 
   addJob(job) {

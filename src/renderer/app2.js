@@ -8,8 +8,9 @@ function colorPanel(sel, one) {
   const ids = sel.map((c) => c.id);
   const look = clone(one?.look || { cdl: IDENT(), lut: null }); if (!look.cdl) look.cdl = IDENT();
   const tr = clone(one?.transform || {}); let t1, t2;
-  const live = () => { if (state.player && one && state.playerClipId === one.id) state.player.setLook(look); clearTimeout(t1); t1 = setTimeout(() => api.invoke('look:set', ids, look), 250); };
-  const liveTr = () => { if (state.player && one && state.playerClipId === one.id) state.player.setTransform(tr); clearTimeout(t2); t2 = setTimeout(() => api.invoke('transform:set', ids, tr), 250); };
+  const refreshThumbs = () => { clearTimeout(colorPanel.t3); colorPanel.t3 = setTimeout(lightRefresh, 800); }; // las miniaturas se rehacen cuando dejas de mover los deslizadores
+  const live = () => { if (state.player && one && state.playerClipId === one.id) state.player.setLook(look); clearTimeout(t1); t1 = setTimeout(() => api.invoke('look:set', ids, look).then(refreshThumbs), 250); };
+  const liveTr = () => { if (state.player && one && state.playerClipId === one.id) state.player.setTransform(tr); clearTimeout(t2); t2 = setTimeout(() => api.invoke('transform:set', ids, tr).then(refreshThumbs), 250); };
   const ch = ['R', 'G', 'B'];
   const grp = (key, title, min, max, step) => h('div', {}, h('div', { class: 'mut', style: 'margin:6px 0 2px' }, title),
     h('div', { class: 'row', style: 'flex-wrap:nowrap;gap:6px' }, ...[0, 1, 2].map((i) => h('label', { class: 'f', style: 'flex:1' }, ch[i], h('input', { type: 'range', min, max, step, value: look.cdl[key][i], oninput: (e) => { look.cdl[key][i] = Number(e.target.value); live(); } })))));
@@ -17,7 +18,7 @@ function colorPanel(sel, one) {
   api.invoke('looks:list').then((ls) => looksBox.replaceChildren(...ls.map((l) => h('span', { class: 'chip', title: 'Aplicar look' }, h('span', { onclick: async () => { look.cdl = clone(l.cdl); look.lut = l.lut; if (l.lut && state.player) await state.player.setLut(await api.invoke('lut:read', l.lut)); live(); render(); } }, l.name), h('button', { class: 'x', style: 'all:unset;cursor:pointer;color:var(--mut)', 'aria-label': 'Borrar look', onclick: async () => { await api.invoke('looks:remove', l.id); render(); } }, '×')))));
   const sel1 = (label, opts, val, fn) => h('label', { class: 'f', style: 'flex:1' }, label, h('select', { onchange: (e) => fn(e.target.value) }, ...opts.map(([v, l]) => h('option', { value: v, selected: String(v) === String(val ?? '') }, l))));
   const crop = tr.crop || { x: 0, y: 0, w: 1, h: 1 };
-  const cs = (k, label) => h('label', { class: 'f', style: 'flex:1' }, label, h('input', { type: 'range', min: 0, max: 1, step: 0.01, value: crop[k], oninput: (e) => { crop[k] = Number(e.target.value); crop.w = Math.min(crop.w, 1 - crop.x); crop.h = Math.min(crop.h, 1 - crop.y); tr.crop = (crop.x || crop.y || crop.w < 1 || crop.h < 1) ? { ...crop } : undefined; liveTr(); } }));
+  const cs = (k, label) => h('label', { class: 'f', style: 'flex:1' }, label, h('input', { type: 'range', min: k === 'w' || k === 'h' ? 0.05 : 0, max: 1, step: 0.01, value: crop[k], oninput: (e) => { crop[k] = Number(e.target.value); crop.w = Math.min(crop.w, 1 - crop.x); crop.h = Math.min(crop.h, 1 - crop.y); tr.crop = (crop.x || crop.y || crop.w < 1 || crop.h < 1) ? { ...crop } : undefined; liveTr(); } }));
   const body = h('div', {},
     grp('slope', 'Slope (ganancia)', 0, 3, 0.01), grp('offset', 'Offset', -0.3, 0.3, 0.005), grp('power', 'Power (gamma)', 0.3, 3, 0.01),
     h('label', { class: 'f', style: 'margin-top:6px' }, 'Saturación', h('input', { type: 'range', min: 0, max: 2, step: 0.01, value: look.cdl.sat, oninput: (e) => { look.cdl.sat = Number(e.target.value); live(); } })),
@@ -25,9 +26,12 @@ function colorPanel(sel, one) {
       h('button', { class: 'btn', onclick: () => { look.cdl = IDENT(); look.lut = null; state.player?.setLut(null); live(); render(); } }, 'Reiniciar'),
       h('button', { class: 'btn', onclick: () => { state.lookClip = clone(look); toast('Look copiado'); } }, 'Copiar'),
       h('button', { class: 'btn', onclick: async () => { if (!state.lookClip) return toast('No hay look copiado'); Object.assign(look, clone(state.lookClip)); if (look.lut && state.player) await state.player.setLut(await api.invoke('lut:read', look.lut)); live(); render(); } }, 'Pegar')),
-    h('div', { class: 'row', style: 'margin-top:8px' },
-      h('button', { class: 'btn', onclick: async () => { const p = await api.invoke('dialog:file', [{ name: 'LUT 3D', extensions: ['cube'] }]); if (!p) return; try { look.lut = p; await state.player?.setLut(await api.invoke('lut:read', p)); live(); render(); } catch (e) { toast('LUT no válida: ' + e.message); } } }, look.lut ? 'Cambiar LUT…' : 'Cargar LUT .cube…'),
-      look.lut ? h('button', { class: 'btn', onclick: () => { look.lut = null; state.player?.setLut(null); live(); render(); } }, 'Quitar LUT') : '', look.lut ? h('span', { class: 'mono mut', title: look.lut }, look.lut.split(/[\\/]/).pop()) : ''),
+    h('div', { class: 'col', style: 'margin-top:8px;gap:4px' }, h('div', { class: 'mut' }, 'LUT (las que importes quedan guardadas)'),
+      lutField(look.lut || '', async (p) => {
+        const prev = look.lut; look.lut = p || null;
+        try { await state.player?.setLut(p ? await api.invoke('lut:read', p) : null); } catch (e) { toast('LUT no válida: ' + errText(e)); look.lut = prev; return; }
+        live(); render();
+      })),
     h('div', { class: 'row', style: 'margin-top:8px' },
       h('button', { class: 'btn', onclick: async () => { const r = await askForm('Guardar look en la biblioteca', [{ key: 'name', label: 'Nombre' }]); if (r?.name) { await api.invoke('looks:save', { name: r.name, cdl: look.cdl, lut: look.lut }); render(); } } }, 'Guardar look'),
       h('button', { class: 'btn', onclick: async () => { const r = await api.invoke('looks:importCdl'); toast(`CDL: ${r.applied} aplicados a clips, ${r.saved} guardados en la biblioteca`); render(); } }, 'Importar CDL'),
@@ -107,6 +111,8 @@ views.settings = async function viewSettings() {
     h('h2', {}, 'Subida S3'), h('div', { class: 'card col' }, h('div', { class: 'row' }, inp('Endpoint', 'endpoint'), inp('Región', 'region'), inp('Bucket', 'bucket')), h('div', { class: 'row' }, inp('Access key', 'accessKey'), inp('Secret key', 'secretKey', 'password', s3.hasSecret ? '(guardada, deja vacío para mantenerla)' : '')),
       h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: async () => { await api.invoke('settings:set', { slack: v.slack, s3: { endpoint: v.endpoint, region: v.region, bucket: v.bucket, accessKey: v.accessKey, secretKey: v.secretKey } }); toast('Ajustes guardados'); render(); } }, 'Guardar'),
         h('span', { class: 'mut' }, S.encrypted ? 'La clave se guarda cifrada con el almacén del sistema.' : 'Aviso: el sistema no ofrece cifrado; la clave se guarda solo ofuscada.'))),
+    h('h2', {}, 'LUTs guardadas'), h('div', { class: 'card row' }, h('span', { class: 'mut', style: 'flex:1;min-width:240px' }, 'Las LUTs que importas se guardan en la app y salen en todos los selectores (color de clip, LUT en bloque y transcode).'),
+      h('button', { class: 'btn', onclick: () => lutManager() }, 'Gestionar LUTs…'), h('button', { class: 'btn', onclick: async () => { const r = await api.invoke('luts:importFolder'); if (r) { await loadLuts(); importSummary(r); } } }, 'Importar carpeta de LUTs…')),
     h('h2', {}, 'Workflows guardados'), h('div', { class: 'card' }, wfs.length ? h('div', { class: 'list' }, ...wfs.map((w) => h('div', { class: 'item' }, h('span', {}, w.name), h('button', { class: 'x', 'aria-label': 'Borrar', onclick: async () => { await api.invoke('workflows:remove', w.name); render(); } }, '×')))) : h('span', { class: 'mut' }, 'Guarda uno desde la pestaña Offload.')),
     h('h2', {}, 'Atajos de teclado'), shortcutsEditor());
 };

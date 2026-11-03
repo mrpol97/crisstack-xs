@@ -17,6 +17,9 @@ const importer = require('./engine/importer');
 const ascmhl = require('./engine/ascmhl');
 const s3 = require('./engine/s3');
 const tools = require('./engine/tools');
+const filters = require('./engine/filters');
+const { LutLibrary } = require('./engine/lutlib');
+const crypto = require('node:crypto');
 
 let appState; // ajustes globales: proyecto actual, looks, workflows, Slack, S3
 const projectFile = (name) => (name === 'Default' ? path.join(app.getPath('userData'), 'library.json') : path.join(app.getPath('userData'), 'projects', `${name.replace(/[^\w .-]/g, '_')}.json`));
@@ -40,7 +43,7 @@ async function uploadPaths(paths, prefix = '') {
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'cine', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, bypassCSP: true, corsEnabled: true } }]);
 
-let win, lib, settings;
+let win, lib, settings, luts;
 const running = new Map(); // jobId -> AbortController
 const send = (ch, payload) => win && !win.isDestroyed() && win.webContents.send(ch, payload);
 
@@ -214,16 +217,16 @@ async function runTranscodes(ids, t) {
     if (!c) continue;
     const item = { id, name: c.name };
     if (c.kind !== 'video') { item.error = 'Solo se pueden transcodificar clips de vídeo'; results.push(item); send('transcode:done', item); continue; }
-    if (!(await fsp.access(c.path).then(() => true, () => false))) { item.error = `No se encuentra el fichero original (${c.path}). Usa Archivo → Relink.`; results.push(item); send('transcode:done', item); continue; }
-    if (!c.meta) { try { c.meta = await media.probe(c.path); } catch (e) { item.error = 'No se pudo leer el clip: ' + e.message; results.push(item); send('transcode:done', item); continue; } }
+    if (!clipFile(c)) { item.error = `No se encuentra el fichero original (${c.path}). Conecta el disco o usa Archivo → Relink.`; results.push(item); send('transcode:done', item); continue; }
+    if (!c.meta) { try { c.meta = await media.probe(clipFile(c)); } catch (e) { item.error = 'No se pudo leer el clip: ' + e.message; results.push(item); send('transcode:done', item); continue; } }
     const out = path.join(outDir, c.reel || 'clips', path.basename(c.name, path.extname(c.name)) + preset.ext);
     const ac = new AbortController(); const key = `tc-${id}`; running.set(key, ac);
     send('transcode:start', { id, name: c.name });
     try {
-      const luts = t.applyLooks === false ? [] : await color.buildFfmpegLooks(c.look, path.join(app.getPath('temp'), 'cinestack-cubes'));
-      if (t.lut) luts.push(t.lut);
+      const lookLuts = t.applyLooks === false ? [] : await color.buildFfmpegLooks(c.look, path.join(app.getPath('temp'), 'cinestack-cubes'));
+      if (t.lut) lookLuts.push(t.lut);
       const tr = c.transform || {};
-      await media.transcode(c.path, out, { ...t, luts, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate, duration: c.meta.duration, fps: c.meta.fps, startTimecode: c.meta.timecode, signal: ac.signal, onProgress: (p) => send('transcode:progress', { id, p }),
+      await media.transcode(clipFile(c) || c.path, out, { ...t, luts: lookLuts, overlays: t.overlays ? filters.resolveOverlays(t.overlays, filters.clipContext(c, info)) : undefined, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate, duration: c.meta.duration, fps: c.meta.fps, startTimecode: c.meta.timecode, signal: ac.signal, onProgress: (p) => send('transcode:progress', { id, p }),
         metadata: t.metaFields?.length ? tools.buildClipMetadata(c, info, t.metaFields) : undefined, timecodeOut: t.keepTimecode !== false ? c.meta.timecode : undefined });
       const size = (await fsp.stat(out)).size;
       const reg = await lib.registerTranscode(c, out, preset.label, (cl) => send('library:clip', cl)); // aparece en la carpeta "Transcodes" con su informacion
@@ -240,15 +243,24 @@ async function runTranscodes(ids, t) {
   return outputs;
 }
 
+/** Fichero real de un clip: el suyo, o una de sus copias si el original ya no esta (disco desconectado, movido, borrado). */
+function clipFile(c) {
+  if (!c) return null;
+  if (c.path && fs.existsSync(c.path)) return c.path;
+  return (c.copies || []).map((x) => x.path).find((p) => p && fs.existsSync(p)) || null;
+}
+
 const proxyCache = new Map();
 async function playbackSource(id) {
   const c = lib.clips[id];
   if (!c) throw new Error('Clip no encontrado');
-  const direct = ['h264', 'vp9', 'vp8', 'av1'].includes(c.meta?.codec) && /\.(mp4|mov|m4v|webm)$/i.test(c.path);
+  const src = clipFile(c);
+  if (!src) throw new Error(`No se encuentra el fichero de «${c.name}» (${c.path}). Puede que el disco esté desconectado o que lo hayas movido o borrado. Conecta el disco, usa Archivo → Relink, o quita el clip de la biblioteca.`);
+  const direct = ['h264', 'vp9', 'vp8', 'av1'].includes(c.meta?.codec) && /\.(mp4|mov|m4v|webm)$/i.test(src);
   if (direct) return { url: `cine://clip/${id}`, proxy: false };
   const out = path.join(app.getPath('userData'), 'proxies', `${id}.mp4`);
   if (!fs.existsSync(out)) {
-    if (!proxyCache.has(id)) proxyCache.set(id, media.transcode(c.path, out, { preset: 'h264_dailies', height: 540, duration: c.meta?.duration, onProgress: (p) => send('proxy:progress', { id, p }) }).finally(() => proxyCache.delete(id)));
+    if (!proxyCache.has(id)) proxyCache.set(id, media.transcode(src, out, { preset: 'h264_dailies', height: 540, duration: c.meta?.duration, onProgress: (p) => send('proxy:progress', { id, p }) }).finally(() => proxyCache.delete(id)));
     await proxyCache.get(id);
   }
   return { url: `cine://proxy/${id}`, proxy: true };
@@ -329,14 +341,14 @@ function registerIpc2() {
   // previsualizacion del transcode: un fotograma con los mismos filtros que se aplicaran
   h('transcode:preview', async (id, t, time) => {
     const c = lib.clips[id]; if (!c || c.kind !== 'video') throw new Error('Elige un clip de vídeo para previsualizar');
-    if (!(await fsp.access(c.path).then(() => true, () => false))) throw new Error('No se encuentra el fichero original');
-    const meta = c.meta || await media.probe(c.path);
+    const src = clipFile(c); if (!src) throw new Error(`No se encuentra el fichero original (${c.path}). Conecta el disco o usa Archivo → Relink.`);
+    const meta = c.meta || await media.probe(src);
     const luts = t.applyLooks === false ? [] : await color.buildFfmpegLooks(c.look, path.join(app.getPath('temp'), 'cinestack-cubes'));
     if (t.lut) luts.push(t.lut);
     const tr = c.transform || {}; const fps = meta.fps || 25;
     const at = time ?? Math.min(1, (meta.duration || 2) / 2);
     const startTc = meta.timecode ? exportsM.framesToTc(exportsM.tcToFrames(meta.timecode, fps) + Math.round(at * fps), fps) : undefined; // -ss reinicia la cuenta: se suma el desplazamiento
-    return media.previewFrame(c.path, { ...t, luts, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate, fps, startTimecode: startTc, time: at });
+    return media.previewFrame(src, { ...t, luts, overlays: t.overlays ? filters.resolveOverlays(t.overlays, filters.clipContext(c, lib.getProject())) : undefined, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate, fps, startTimecode: startTc, time: at });
   });
   // informes: varias configuraciones guardadas, exportables e importables
   h('reports:list', () => reportPresets());
@@ -372,6 +384,73 @@ function registerIpc2() {
   });
   h('transform:set', (ids, tr) => lib.bulkUpdate(ids, { transform: tr }));
   h('lut:read', async (p) => { const c = color.parseCube(await fsp.readFile(p, 'utf8')); return { size: c.size, data: c.data }; });
+  // biblioteca de LUTs guardadas
+  const cubesDir = () => path.join(app.getPath('temp'), 'cinestack-cubes');
+  const dropCubes = (list) => Promise.all((list || []).filter((l) => l.startsWith(cubesDir())).map((l) => fsp.rm(l, { force: true })));
+  h('luts:list', () => luts.list());
+  h('luts:import', async () => {
+    const r = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'LUT (.cube)', extensions: ['cube'] }] });
+    return r.canceled ? null : luts.addMany(r.filePaths);
+  });
+  h('luts:importFolder', async () => {
+    const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
+    return r.canceled ? null : luts.addFolder(r.filePaths[0]);
+  });
+  h('luts:importPaths', (files) => luts.addMany(files));
+  h('luts:remove', (id) => luts.remove(id));
+  h('luts:rename', (id, name) => luts.rename(id, name));
+  h('library:checkMissing', () => Object.values(lib.clips).filter((c) => c.path && !clipFile(c)).map((c) => ({ id: c.id, name: c.name, path: c.path })));
+  h('library:remove', (ids) => { let n = 0; for (const id of ids || []) if (lib.clips[id]) { delete lib.clips[id]; n++; } lib.store.save(); return n; });
+
+  // stills por escena: se guardan con el look del clip y quedan agrupados por escena
+  const stillsRoot = () => path.join(app.getPath('documents'), 'CrisStack Stills');
+  const seg = (s) => String(s || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim().slice(0, 60);
+  const stillThumbDir = () => path.join(app.getPath('userData'), 'stills-thumbs');
+  h('stills:list', () => lib.listStills());
+  h('stills:capture', async ({ clipId, t, format = 'jpeg', note = '', scene }) => {
+    const c = lib.clips[clipId]; if (!c || c.kind !== 'video') throw new Error('Elige un clip de vídeo');
+    const src = clipFile(c); if (!src) throw new Error(`No se encuentra el fichero de «${c.name}»`);
+    const preset = media.STILL_PRESETS[format] ? format : 'jpeg';
+    const fps = c.meta?.fps || 25; const at = Math.max(0, Number(t) || 0);
+    const info = lib.getProject();
+    const sceneName = String(scene ?? c.scene ?? '').trim();
+    const tc = c.meta?.timecode ? exportsM.framesToTc(exportsM.tcToFrames(c.meta.timecode, fps) + Math.round(at * fps), fps) : '';
+    const look = await color.buildFfmpegLooks(c.look, cubesDir()); const tr = c.transform || {};
+    const dir = path.join(stillsRoot(), seg(info?.name || 'Proyecto'), sceneName ? `Escena_${seg(sceneName)}` : 'Sin_escena');
+    const name = [sceneName && `Esc${seg(sceneName)}`, c.shot && `Pl${seg(c.shot)}`, c.take && `T${seg(c.take)}`, seg(path.basename(c.name, path.extname(c.name))), (tc || `${Math.round(at * 1000)}ms`).replace(/[:;]/g, '-')].filter(Boolean).join('_');
+    let file = path.join(dir, name + media.STILL_PRESETS[preset].ext);
+    for (let i = 2; fs.existsSync(file); i++) file = path.join(dir, `${name}_${i}${media.STILL_PRESETS[preset].ext}`);
+    try { await media.exportStill(src, file, { time: at, preset, luts: look, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate }); } finally { await dropCubes(look); }
+    const id = 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    const thumb = path.join(stillThumbDir(), id + '.jpg'); await fsp.mkdir(stillThumbDir(), { recursive: true });
+    await media.run(media.FFMPEG, ['-v', 'error', '-y', '-i', file, '-vf', 'scale=480:-2', '-frames:v', '1', '-q:v', '5', thumb]);
+    return lib.addStill({ id, clipId, clipName: c.name, scene: sceneName, shot: c.shot || '', take: c.take || '', camera: c.camera || '', reel: c.reel || '', t: at, tc, note: String(note || '').slice(0, 500), file, thumb, format: preset, look: c.look?.lut ? path.basename(c.look.lut) : '', created: new Date().toISOString() });
+  });
+  h('stills:update', (id, patch) => lib.updateStill(id, patch));
+  h('stills:remove', async (id, deleteFile) => {
+    const s = lib.removeStill(id); if (!s) return false;
+    await fsp.rm(s.thumb, { force: true }).catch(() => {});
+    if (deleteFile) await fsp.rm(s.file, { force: true }).catch(() => {});
+    return true;
+  });
+  h('stills:strip', async (clipId, count = 12) => {
+    const c = lib.clips[clipId]; if (!c || c.kind !== 'video') throw new Error('Elige un clip de vídeo');
+    const src = clipFile(c); if (!src) throw new Error('No se encuentra el fichero del clip');
+    const look = await color.buildFfmpegLooks(c.look, cubesDir()); const tr = c.transform || {};
+    try { return await media.filmstrip(src, { count, duration: c.meta?.duration || 1, luts: look, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate }); } finally { await dropCubes(look); }
+  });
+  h('stills:report', async ({ scene, format = 'pdf', dark = false }) => {
+    const all = lib.listStills(); const list = scene === undefined || scene === null || scene === '__all__' ? all : all.filter((s) => (s.scene || '') === scene);
+    if (!list.length) throw new Error('No hay stills que incluir en el informe');
+    const thumbs = {}; for (const s of list) { try { thumbs[s.id] = 'data:image/jpeg;base64,' + (await fsp.readFile(s.thumb)).toString('base64'); } catch { /* sin miniatura */ } }
+    const info = lib.getProject();
+    const html = report.buildStills(list, { projectInfo: info, dark, thumbs, title: scene && scene !== '__all__' ? `Stills · escena ${scene}` : 'Stills por escena' });
+    const dir = path.join(stillsRoot(), seg(info?.name || 'Proyecto')); await fsp.mkdir(dir, { recursive: true });
+    const base = path.join(dir, `Stills_${scene && scene !== '__all__' ? 'Esc' + seg(scene) : 'todas'}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}`);
+    if (format === 'html') { await fsp.writeFile(base + '.html', html); return base + '.html'; }
+    return renderPdf(html, base + '.pdf');
+  });
+
   h('looks:importCdl', async () => {
     const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: 'ASC CDL', extensions: ['cdl', 'cc', 'ccc'] }] });
     if (r.canceled) return { applied: 0, saved: 0 };
@@ -383,12 +462,15 @@ function registerIpc2() {
     }
     return { applied, saved: items.length - applied };
   });
-  h('thumb:set', async (id, t) => { const c = lib.clips[id]; c.thumb = await media.thumbnail(c.path, path.join(app.getPath('userData'), 'thumbs', `${id}.jpg`), t); lib.store.save(); return c.thumb; });
+  h('thumb:set', async (id, t) => { // elige el momento que se ve como miniatura del clip
+    const c = lib.clips[id]; const src = clipFile(c); if (!src) throw new Error('No se encuentra el fichero del clip');
+    c.thumb = await media.thumbnail(src, path.join(app.getPath('userData'), 'thumbs', `${id}.jpg`), t); c.thumbAt = Number(t) || 0; lib.store.save(); return c.thumb;
+  });
   h('still:export', async (id, t, preset) => {
     const c = lib.clips[id]; const tr = c.transform || {};
     const luts = await color.buildFfmpegLooks(c.look, path.join(app.getPath('temp'), 'cinestack-cubes'));
     const dir = path.join(app.getPath('documents'), 'Cinestack Stills'); const ext = media.STILL_PRESETS[preset || 'jpeg'].ext;
-    return media.exportStill(c.path, path.join(dir, `${path.basename(c.name, path.extname(c.name))}_${Math.round(t * 1000)}${ext}`), { time: t, preset, luts, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate });
+    return media.exportStill(clipFile(c) || c.path, path.join(dir, `${path.basename(c.name, path.extname(c.name))}_${Math.round(t * 1000)}${ext}`), { time: t, preset, luts, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate });
   });
   h('combine:run', async (ids, preset, height) => {
     const files = pick(ids).filter((c) => c.kind === 'video').map((c) => c.path); if (files.length < 2) throw new Error('Selecciona al menos 2 clips');
@@ -494,20 +576,56 @@ function registerIpc2() {
   });
 }
 
+/* ---- miniaturas con el look del clip (LUT, CDL, recorte, giro): se generan una vez a partir de la miniatura y se guardan ---- */
+const hasVisibleLook = (c) => !!(c.look?.lut || (c.look?.cdl && !color.isIdentity(c.look.cdl)) || (c.transform && (c.transform.crop || (c.transform.desqueeze && c.transform.desqueeze !== 1) || c.transform.flip || c.transform.rotate)));
+let lookSlots = 0; const lookWaiters = [];
+async function withLookSlot(fn) {
+  while (lookSlots >= 3) await new Promise((r) => lookWaiters.push(r));
+  lookSlots++;
+  try { return await fn(); } finally { lookSlots--; lookWaiters.shift()?.(); }
+}
+const stillThumbs = (ud) => path.join(ud, 'stills-thumbs');
+const lookInflight = new Map();
+async function lookedThumb(c, base) {
+  if (!hasVisibleLook(c) || !fs.existsSync(base)) return base;
+  const lutStamp = c.look?.lut ? await fsp.stat(c.look.lut).then((s) => `${s.mtimeMs}:${s.size}`, () => 'missing') : '';
+  const key = crypto.createHash('sha1').update(JSON.stringify([c.look, c.transform, lutStamp, (await fsp.stat(base)).mtimeMs])).digest('hex').slice(0, 10);
+  const dir = path.join(path.dirname(base), 'looks'); const out = path.join(dir, `${c.id}_${key}.jpg`);
+  if (fs.existsSync(out)) return out;
+  if (!lookInflight.has(out)) {
+    lookInflight.set(out, withLookSlot(async () => {
+      const cubes = path.join(app.getPath('temp'), 'cinestack-cubes'); const list = await color.buildFfmpegLooks(c.look, cubes); const tr = c.transform || {};
+      try {
+        await media.lookThumb(base, out, { luts: list, crop: tr.crop, desqueeze: tr.desqueeze, flip: tr.flip, rotate: tr.rotate });
+        for (const f of await fsp.readdir(dir).catch(() => [])) if (f.startsWith(c.id + '_') && f !== path.basename(out)) fsp.rm(path.join(dir, f), { force: true }).catch(() => {}); // versiones antiguas
+      } finally { for (const l of list) if (l.startsWith(cubes)) fsp.rm(l, { force: true }).catch(() => {}); }
+    }).catch(() => null).finally(() => lookInflight.delete(out)));
+  }
+  await lookInflight.get(out);
+  return fs.existsSync(out) ? out : base;
+}
+
+
 app.whenReady().then(() => {
   const ud = app.getPath('userData');
   appState = new Store(path.join(ud, 'app-settings.json'), { project: 'Default', looks: [], workflows: [], slack: '', s3: null });
   openProject(appState.get('project'));
   settings = lib.store;
+  luts = new LutLibrary(path.join(ud, 'luts'), appState);
 
   protocol.handle('cine', async (req) => {
     const u = new URL(req.url);
     const id = u.pathname.replace(/^\//, '');
     let file;
-    if (u.host === 'thumb') file = path.join(ud, 'thumbs', id.replace(/[^\w.-]/g, '') + (id.endsWith('.jpg') ? '' : '.jpg'));
-    else if (u.host === 'clip') file = lib.clips[id]?.path;
+    if (u.host === 'thumb') {
+      const cid = id.replace(/[^\w.-]/g, '').replace(/\.jpg$/, '');
+      const base = path.join(ud, 'thumbs', cid + '.jpg');
+      file = u.searchParams.get('look') === '1' && lib.clips[cid] ? await lookedThumb(lib.clips[cid], base) : base;
+    } else if (u.host === 'still') file = path.join(stillThumbs(ud), id.replace(/[^\w.-]/g, '').replace(/\.jpg$/, '') + '.jpg');
+    else if (u.host === 'stillfull') file = lib.listStills().find((s) => s.id === id)?.file;
+    else if (u.host === 'clip') file = clipFile(lib.clips[id]);
     else if (u.host === 'proxy') file = path.join(ud, 'proxies', id.replace(/[^\w.-]/g, '') + '.mp4');
-    if (!file) return new Response('not found', { status: 404 });
+    if (!file || !fs.existsSync(file)) return new Response('not found', { status: 404 });
     const r = await net.fetch(pathToFileURL(file).toString(), { headers: req.headers });
     const headers = new Headers(r.headers); headers.set('Access-Control-Allow-Origin', '*'); // necesario para subir el video a una textura WebGL
     return new Response(r.body, { status: r.status, statusText: r.statusText, headers });
@@ -556,7 +674,7 @@ async function selftest(outDir) {
     await js(`document.querySelectorAll('.clip')[1].dispatchEvent(new MouseEvent('click',{ctrlKey:true,bubbles:true}))`); await wait(300);
     step('selected', await js(`document.querySelectorAll('.clip.sel').length`));
     await js(`document.querySelector('.clip').click()`); await wait(200);
-    await js(`document.querySelector('#inspector .btn').click()`); await wait(1500);
+    await js(`[...document.querySelectorAll('#inspector .btn')].find((b)=>b.textContent==='Reproducir').click()`); await wait(1500);
     step('video ready', await js(`(()=>{const v=document.querySelector('#player video');return v?{rs:v.readyState,dur:v.duration,err:v.error&&v.error.code}:null})()`));
     await shot('3-library-player');
     // --- reproductor WebGL: medir pixeles reales con CDL y color falso ---
@@ -706,6 +824,84 @@ async function selftest(outDir) {
     await shot("p5-progreso-en-vivo");
     await bigRun; await wait(600);
     step("progreso final", await js(`document.querySelector(".jobcard .jdetail")?.innerText.split(String.fromCharCode(10)).join(" | ")`));
+
+    // ===================== v0.5 =====================
+    await js(`go('library')`); await wait(900);
+    const centerOf = (sel) => js(`(()=>{const r=document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect();return [Math.round(r.left+r.width/2),Math.round(r.top+r.height/2)]})()`);
+    const mouse = async (type, x, y, extra = {}) => { win.webContents.sendInputEvent({ type, x, y, button: 'left', clickCount: 1, ...extra }); await wait(25); };
+    const clickAt = async (sel) => { const [x, y] = await centerOf(sel); await mouse('mouseDown', x, y); await mouse('mouseUp', x, y); await wait(500); };
+    const dragBy = async (x, y, dx, dy) => { await mouse('mouseDown', x, y); for (let i = 1; i <= 8; i++) await mouse('mouseMove', x + (dx * i) / 8, y + (dy * i) / 8, { modifiers: ['leftButtonDown'] }); await mouse('mouseUp', x + dx, y + dy); await wait(400); };
+
+    // 1) botones QC y Ajustes: fuera de la zona de arrastre y con clic real
+    step('v05 botones', await js(`(()=>{const out={};for(const sel of ['#qcBtn','[data-view=settings]']){const b=document.querySelector(sel);const r=b.getBoundingClientRect();const at=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);out[sel]={region:getComputedStyle(b).getPropertyValue('-webkit-app-region'),encima:at===b||b.contains(at),texto:b.textContent.trim()};}return out;})()`));
+    await clickAt('#qcBtn'); step('v05 clic en Modo revision', await js(`document.body.classList.contains('qc')`)); await shot('q0-modo-revision'); await clickAt('#qcBtn');
+    await clickAt('[data-view=settings]'); step('v05 clic en Ajustes', await js(`state.view`)); await shot('q0-ajustes'); await js(`go('library')`); await wait(700);
+
+    // 2) reproducir un clip cuyo fichero ya no existe: mensaje claro y opcion de quitarlo
+    const ghost = lib.newClip({ rel: 'FANTASMA.mov', abs: '/no/existe/FANTASMA.mov', kind: 'video', size: 1 }, lib.listBins()[0], { path: '/no/existe/FANTASMA.mov', meta: { codec: 'prores' } });
+    lib.store.data.clips[ghost.id] = ghost; lib.store.save();
+    step('v05 playback sin fichero', await js(`api.invoke('playback:source', ${JSON.stringify(ghost.id)}).then(()=>'SIN ERROR', (e)=>e.message)`));
+    await js(`state.lib.bin=null; state.lib.mode='grid'; render()`); await wait(900);
+    await js(`(()=>{const c=state.lib.clips.find((x)=>x.name==='FANTASMA.mov'); state.lib.sel=new Set([c.id]); drawInspector(); return play(c);})()`); await wait(900);
+    step('v05 error en el reproductor', await js(`document.querySelector('#player')?.innerText.split(String.fromCharCode(10)).join(' | ')`));
+    await js(`api.invoke('library:remove', [${JSON.stringify(ghost.id)}])`);
+
+    // 3) LUTs guardadas (incluye una 1D)
+    const oneD = path.join(outDir, 'curva1d.cube'); fs.writeFileSync(oneD, 'LUT_1D_SIZE 4\n0 0 0\n0.3 0.3 0.3\n0.6 0.6 0.6\n1 1 1\n');
+    const lutImp = await js(`api.invoke('luts:importPaths', ${JSON.stringify([lutFile, oneD, path.join(outDir, 'no-existe.cube')])})`);
+    step('v05 LUTs guardadas', { nuevas: lutImp.added.length, ya: lutImp.duplicates.length, errores: lutImp.errors.length, lista: (await js(`api.invoke('luts:list')`)).map((l) => `${l.name} ${l.size}${l.converted ? ' (de 1D)' : ''}`) });
+    const a001 = Object.values(lib.clips).find((c) => c.name === 'A001.mp4');
+    lib.updateClip(a001.id, { scene: '12', shot: 'B', take: '3' });
+    await js(`state.lib.bin=null; state.lib.mode='grid'; render()`); await wait(900);
+    await js(`(()=>{const c=state.lib.clips.find((x)=>x.name==='A001.mp4'); state.lib.sel=new Set([c.id]); drawClips($('#clipGrid')); drawInspector();})()`); await wait(900);
+    await js(`document.querySelector('#inspector details summary')?.click()`); await wait(400);
+    step('v05 selector de LUT', await js(`[...document.querySelectorAll('#inspector .lutfield option')].map((o)=>o.textContent)`));
+
+    { const libLut = (await js(`api.invoke('luts:list')`)).find((l) => l.name === 'curva1d');
+      await js(`(()=>{const s=document.querySelector('#inspector .lutfield select'); s.value=${JSON.stringify(libLut.file)}; s.dispatchEvent(new Event('change'));})()`); await wait(2200);
+      step('v05 elegir una LUT guardada (1D convertida)', { lut: path.basename(lib.clips[a001.id].look?.lut || ''), esLaDeLaBiblioteca: lib.clips[a001.id].look?.lut === libLut.file, errores: await js('window.__errs') }); }
+    // 4) miniaturas con el look
+    const getBuf = async (u) => Buffer.from(await (await net.fetch(u)).arrayBuffer());
+    const plainB = await getBuf(`cine://thumb/${a001.id}`), lookB = await getBuf(`cine://thumb/${a001.id}?look=1&k=x`);
+    step('v05 miniatura con look', { sinLook: plainB.length, conLook: lookB.length, distintas: !plainB.equals(lookB), clipTieneLUT: !!lib.clips[a001.id].look?.lut, imgsConLook: await js(`[...document.querySelectorAll('.clip img')].filter((i)=>i.src.includes('look=1')).length`) });
+    await shot('q4-miniaturas-con-look');
+
+    // 5) paneles flotantes: separar, mover con el raton real, acoplar
+    await js(`setFloat('color', true); setFloat('player', true)`); await wait(900);
+    await js(`play(state.lib.clips.find((c)=>c.name==='A001.mp4'))`); await wait(2500);
+    step('v05 paneles flotantes', await js(`[...document.querySelectorAll('.fpanel')].map((e)=>{const r=e.getBoundingClientRect();return {k:e.dataset.fp,x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height),dentro:r.right<=innerWidth+1&&r.bottom<=innerHeight+1,canvas:!!e.querySelector('canvas'),sliders:e.querySelectorAll('input[type=range]').length}})`));
+    await shot('q1-paneles-flotantes');
+    { const [x, y] = await centerOf('.fpanel[data-fp=color] .fphead b'); await dragBy(x, y, -260, 90); }
+    step('v05 panel movido con el raton', await js(`(()=>{const r=document.querySelector('.fpanel[data-fp=color]').getBoundingClientRect();return {x:Math.round(r.left),y:Math.round(r.top),guardado:JSON.parse(localStorage.getItem('cine.float')).color}})()`));
+    await shot('q1b-flotante-movido');
+    await js(`setFloat('color', false); setFloat('player', false)`); await wait(600);
+    step('v05 paneles acoplados', await js(`({ flotantes: document.querySelectorAll('.fpanel').length, enInspector: !!document.querySelector('#inspector .dockpanel') })`));
+
+    // 6) textos en pantalla: varios, con datos del clip, arrastrables sobre la previsualizacion
+    await js(`(()=>{const t=state.transcode;t.overlays=[newOverlay('tc'),newOverlay('name'),newOverlay('text',{text:'Esc {scene} · Toma {take} — BORRADOR',x:0.5,y:0.5,size:5,color:'yellow'})];t.res='540';go('transcode');})()`); await wait(1200);
+    await js(`[...document.querySelectorAll('.tcgrid button')].find((b)=>b.textContent.includes('Actualizar previsualización'))?.click()`); await wait(3800);
+    step('v05 recuadros de texto', await js(`({ recuadros: document.querySelectorAll('.prevbox .ovh').length, filas: document.querySelectorAll('.ovrow').length, imagen: !!document.querySelector('.prevbox img'), error: document.querySelector('.prevbox .bad')?.innerText })`));
+    const before = await js(`document.querySelector('.prevbox img').src.length`);
+    { const [x, y] = await js(`(()=>{const e=[...document.querySelectorAll('.prevbox .ovh')].pop();const r=e.getBoundingClientRect();return [Math.round(r.left+r.width/2),Math.round(r.top+r.height/2)]})()`); await dragBy(x, y, -160, -90); }
+    await wait(3500);
+    step('v05 texto arrastrado', await js(`({ textos: state.transcode.overlays.map((o)=>[o.kind,+o.x.toFixed(2),+o.y.toFixed(2)]), lista: [...document.querySelectorAll('.ovrow')].pop().querySelector('select').value, imagenNueva: document.querySelector('.prevbox img').src.length !== ${before} })`));
+    await shot('q2-transcode-textos');
+    // el texto con datos del clip llega al fichero final
+    const tcOut5 = path.join(outDir, 'TC_V05');
+    const tcRes = await runTranscodes([a001.id], { preset: 'h264_dailies', height: 360, dir: tcOut5, overlays: [{ kind: 'tc', x: 0.5, y: 0.93, size: 3.6 }, { kind: 'text', text: 'Esc {scene} Toma {take}', x: 0.2, y: 0.2, size: 5, color: 'yellow' }], metaFields: [] });
+    step('v05 transcode con textos', { salidas: tcRes.map((f) => [path.basename(f), fs.statSync(f).size]) });
+
+    // 7) espacio de stills por escena
+    await js(`state.st=null; state.lib.sel=new Set([${JSON.stringify(a001.id)}]); go('stills')`); await wait(3500);
+    step('v05 stills vista', await js(`({ reproductor: !!document.querySelector('#main canvas'), tira: document.querySelectorAll('.fsframe').length, escena: document.querySelector('#main select').value, titulo: document.querySelector('#main h1').innerText })`));
+    for (const i of [2, 8]) { await js(`document.querySelectorAll('.fsframe')[${i}]?.click()`); await wait(800); await js(`[...document.querySelectorAll('#main button')].find((b)=>b.textContent.includes('Guardar still')).click()`); await wait(2600); }
+    await js(`[...document.querySelectorAll('#main button')].find((b)=>b.textContent.includes('Usar como miniatura')).click()`); await wait(1500);
+    const sl = await js(`api.invoke('stills:list')`);
+    step('v05 stills guardados', { galeria: await js(`document.querySelectorAll('.stcard').length`), lista: sl.map((s) => [s.scene, s.shot, s.take, s.tc, fs.existsSync(s.file), fs.existsSync(s.thumb), path.basename(s.file)]), miniaturaEn: lib.clips[a001.id].thumbAt });
+    await shot('q3-stills');
+    const pdf = await js(`api.invoke('stills:report', { scene: '12', format: 'pdf' })`); step('v05 informe de stills', { pdf: path.basename(pdf), kb: Math.round(fs.statSync(pdf).size / 1024) });
+    // 8) el atajo del reproductor de la biblioteca guarda en la escena
+    await js(`go('library')`); await wait(900);
 
     await js(`go('library')`); await wait(900);
     step('mhl exists', !!mhl && fs.existsSync(mhl));

@@ -68,8 +68,8 @@ class CinePlayer {
     for (const [v, l] of FRAME_LINES) sel.append(new Option(l, v)); sel.onchange = () => this.setFrameLines(sel.value);
     const sc = btn('Scopes', 'Waveform, histograma y vectorscopio', () => { this.scopesOn = !this.scopesOn; this.scopes.style.display = this.scopesOn ? 'grid' : 'none'; sc.style.borderColor = this.scopesOn ? '#4c8dff' : ''; this.drawScopes(); });
     row2.append(tog('Color falso', 'false', 'Exposición por colores'), tog('Zebra', 'zebra', 'Zebra sobre 94 %'), tog('Clipping', 'clip', 'Rojo = recorte de luces, azul = sombras'), tog('Peaking', 'peak', 'Ayuda de foco'), sel, sc,
-      btn('⤢', 'Pantalla completa', () => (document.fullscreenElement ? document.exitFullscreen() : this.host.requestFullscreen())), btn('⟲ Fotograma', 'Guardar still con el look aplicado', () => this.onStill?.(this.video.currentTime)),
-      btn('Miniatura', 'Usar este fotograma como miniatura', () => this.onThumb?.(this.video.currentTime)));
+      btn('⤢', 'Pantalla completa', () => (document.fullscreenElement ? document.exitFullscreen() : this.host.requestFullscreen())), btn('📷 Still', 'Guarda este fotograma como still de su escena, con el look aplicado (se ven en Stills)', () => this.onStill?.(this.video.currentTime)),
+      btn('Miniatura', 'Usar este fotograma como miniatura del clip', () => this.onThumb?.(this.video.currentTime)));
     bar.append(row1, row2); return bar;
   }
 

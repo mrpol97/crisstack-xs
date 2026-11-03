@@ -97,6 +97,22 @@ function build(type, { clips = [], jobs = [], project = 'Proyecto', day = '', da
   return wrap(T('Informe de clips'), sub, table, dark);
 }
 
+/** Hoja de stills agrupada por escena. thumbs: { idDelStill: dataURL }. */
+function buildStills(stills = [], { projectInfo = null, title = '', dark = false, thumbs = {} } = {}) {
+  CURRENT_INFO = projectInfo;
+  const groups = new Map();
+  for (const s of stills) { const k = s.scene || ''; (groups.get(k) || groups.set(k, []).get(k)).push(s); }
+  const keys = [...groups.keys()].sort((a, b) => String(a).localeCompare(String(b), 'es', { numeric: true }));
+  const body = keys.map((k) => {
+    const cards = groups.get(k).sort((a, b) => (a.shot + a.take + a.clipName + a.t).localeCompare(b.shot + b.take + b.clipName + b.t, 'es', { numeric: true })).map((s) => `<div class="card"><img src="${thumbs[s.id] || ''}" alt=""><div><b>${esc(s.clipName)}</b><br>${esc([s.shot && 'Plano ' + s.shot, s.take && 'Toma ' + s.take].filter(Boolean).join(' · '))}${s.tc ? ` · <span class="mono">${esc(s.tc)}</span>` : ''}${s.note ? `<br><i>${esc(s.note)}</i>` : ''}</div></div>`).join('');
+    return `<h2>${k ? 'Escena ' + esc(k) : 'Sin escena'} <span class="mut">· ${groups.get(k).length} ${groups.get(k).length === 1 ? 'still' : 'stills'}</span></h2><div class="grid3">${cards}</div>`;
+  }).join('');
+  const css = '<style>.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.mut{color:var(--mut);font-weight:400}.card{break-inside:avoid}</style>';
+  const sub = `${projectInfo?.name || 'Proyecto'} · ${stills.length} stills · generado ${new Date().toLocaleString('es-ES')}`;
+  return wrap(title || 'Stills por escena', sub, css + (body || '<p class="sub">No hay stills guardados.</p>'), dark);
+}
+
+
 function toCsv(clips) {
   const cols = ['name', 'reel', 'camera', 'scene', 'shot', 'take', 'flag', 'rating', 'color', 'notes', 'size', 'verified'];
   const meta = ['codec', 'width', 'height', 'fps', 'timecode', 'duration'];
@@ -123,4 +139,4 @@ function toEdl(clips, title = 'CINESTACK', fps = 25) {
   return out.join('\n');
 }
 
-module.exports = { REPORT_COLUMNS, build, toCsv, toEdl };
+module.exports = { REPORT_COLUMNS, build, buildStills, toCsv, toEdl };

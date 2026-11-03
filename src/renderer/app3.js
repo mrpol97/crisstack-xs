@@ -184,7 +184,9 @@ async function libraryScreen() {
       h('span', { class: 'segs' }, modeBtn('list', 'Lista', 'Tabla con todas las columnas'), modeBtn('grid', 'Miniaturas', 'Miniaturas de los clips'), modeBtn('folders', 'Carpetas', 'Resumen por carpeta: clips, tamaño y tipos'), modeBtn('compare', 'Comparar', 'Dos clips seleccionados, en cuadrícula o con cortina'))),
     h('div', { class: 'row', style: 'margin-bottom:8px;justify-content:space-between' }, crumbEl,
       h('span', { class: 'row' }, L.mode === 'list' ? h('button', { class: 'btn', onclick: columnsDialog }, 'Columnas…') : '',
+        L.mode === 'list' || L.mode === 'grid' ? h('label', { class: 'chip', title: 'Muestra las miniaturas con la LUT, el color y la transformación de cada clip' }, h('input', { type: 'checkbox', checked: L.thumbLook !== false, onchange: (e) => { L.thumbLook = e.target.checked; try { localStorage.setItem('cine.thumbLook', e.target.checked ? '1' : '0'); } catch { /* */ } drawClips($('#clipGrid')); } }), 'Miniaturas con look') : '',
         h('button', { class: 'btn', title: 'Aplica una LUT a la selección, a una carpeta o a todo; después puedes ajustar un poco el color de cada clip', onclick: lutDialog }, 'LUT…'),
+        h('button', { class: 'btn', title: 'Busca clips cuyo fichero ya no está (disco desconectado, movido o borrado) y deja quitarlos de la biblioteca', onclick: missingDialog }, 'Comprobar ficheros'),
         h('button', { class: 'btn', title: 'Exporta las columnas visibles', onclick: exportColumns }, 'CSV'), h('button', { class: 'btn', onclick: async () => { const f = await api.invoke('export:edl', [...L.sel], 25); if (f) toast('EDL guardado'); } }, 'EDL'))),
     h('div', { id: 'clipGrid', class: 'clips' }));
   const insp = h('div', { class: 'pane', id: 'inspector' });
@@ -252,13 +254,27 @@ async function drawCompare(host) {
     stage, h('div', { class: 'row', style: 'margin-top:8px;flex-wrap:nowrap' }, h('button', { class: 'btn', onclick: () => { if (pa.video.paused) { pa.video.play(); pb.video.play(); } else { pa.video.pause(); pb.video.pause(); } } }, '▶ / ⏸'), seek));
 }
 
+/* ---------- clips cuyo fichero ya no existe ---------- */
+async function missingDialog() {
+  const list = await api.invoke('library:checkMissing');
+  if (!list.length) return toast('Todos los clips tienen su fichero en su sitio');
+  const dlg = h('dialog', { class: 'pform' });
+  const close = () => { dlg.close(); dlg.remove(); };
+  dlg.append(h('div', { class: 'col', style: 'gap:12px' }, h('b', { style: 'font-size:15px' }, `${list.length} ${list.length === 1 ? 'clip sin fichero' : 'clips sin fichero'}`),
+    h('div', { class: 'mut' }, 'Estos clips siguen en la biblioteca pero su fichero ya no está en su sitio. Si el disco está desconectado, conéctalo; si lo moviste, usa Archivo → Relink. Si ya no existen, quítalos de la lista (los ficheros no se tocan).'),
+    h('div', { class: 'list', style: 'max-height:40vh;overflow:auto' }, ...list.slice(0, 80).map((c) => h('div', { class: 'item' }, h('span', { title: c.path }, c.name), h('span', { class: 'mono mut' }, c.path)))),
+    list.length > 80 ? h('div', { class: 'mut' }, `… y ${list.length - 80} más`) : '',
+    h('div', { class: 'row', style: 'justify-content:space-between' }, h('button', { type: 'button', class: 'btn danger', onclick: async () => { const n = await api.invoke('library:remove', list.map((c) => c.id)); close(); state.lib.sel.clear(); state.playerClipId = null; toast(`${n} clips quitados de la biblioteca`); render(); } }, 'Quitar todos de la biblioteca'),
+      h('span', { class: 'row' }, h('button', { type: 'button', class: 'btn', onclick: () => { close(); go('archive'); } }, 'Ir a Relink'), h('button', { type: 'button', class: 'btn primary', onclick: close }, 'Cerrar')))));
+  dlg.addEventListener('cancel', () => dlg.remove()); document.body.append(dlg); dlg.showModal();
+}
+
 /* ---------- LUT en bloque: seleccion, carpeta o todo; despues se ajusta cada clip ---------- */
 async function lutDialog() {
   const L = state.lib; const nSel = L.sel.size; const bin = L.bin ? L.bins.find((b) => b.id === L.bin) : null;
   const opts = [...(nSel ? [['sel', `Los ${nSel} clips seleccionados`]] : []), ...(bin ? [['bin', `La carpeta «${bin.name}» (con sus subcarpetas, ${bin.count} clips)`]] : []), ['all', 'Toda la biblioteca']];
   let lut = ''; let scope = opts[0][0]; let order = 'lut-first';
   const dlg = h('dialog', { class: 'pform' });
-  const lutLine = h('div', { class: 'mono mut' }, 'Ninguna LUT elegida');
   const apply = async (remove) => {
     if (!remove && !lut) { toast('Elige primero una LUT .cube'); return; }
     const target = scope === 'sel' ? { ids: [...L.sel] } : scope === 'bin' ? { bin: L.bin } : {};
@@ -268,7 +284,7 @@ async function lutDialog() {
   dlg.append(h('div', { class: 'col', style: 'gap:12px' }, h('b', { style: 'font-size:15px' }, 'Aplicar una LUT'),
     h('div', { class: 'mut' }, 'La LUT se aplica como base. El ajuste de color de cada clip (CDL) se conserva y se aplica encima, y se puede retocar clip a clip desde «Color y transformación».'),
     h('div', { class: 'col' }, ...opts.map(([v, l]) => h('label', { class: 'chip', style: 'align-self:flex-start' }, h('input', { type: 'radio', name: 'lutscope', checked: v === scope, onchange: () => (scope = v) }), l))),
-    h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn', onclick: async () => { const p = await api.invoke('dialog:file', [{ name: 'LUT 3D', extensions: ['cube'] }]); if (p) { lut = p; lutLine.textContent = p.split(/[\\/]/).pop(); lutLine.title = p; } } }, 'Elegir LUT .cube…'), lutLine),
+    h('div', { class: 'col', style: 'gap:4px' }, h('div', { class: 'mut' }, 'LUT (las que importes quedan guardadas para la próxima vez)'), lutField(lut, (p) => { lut = p; }, { none: 'Elige una LUT…' })),
     h('div', { class: 'row', style: 'justify-content:space-between' }, h('button', { type: 'button', class: 'btn danger', onclick: () => apply(true) }, 'Quitar LUT'),
       h('span', { class: 'row' }, h('button', { type: 'button', class: 'btn', onclick: () => { dlg.close(); dlg.remove(); } }, 'Cancelar'), h('button', { type: 'button', class: 'btn primary', onclick: () => apply(false) }, 'Aplicar')))));
   dlg.addEventListener('cancel', () => dlg.remove());
@@ -310,7 +326,7 @@ function drawList(host) {
     const td = h('td', { style: `max-width:${colDef.w + 80}px` });
     if (colDef.kind === 'flag') td.append(h('button', { class: 'flagbtn flag-' + (c.flag || 'none'), title: 'Cambiar marca', 'aria-label': 'Marca: ' + (c.flag || 'ninguna'), onclick: (e) => { e.stopPropagation(); const nx = FLAG_CYCLE[(FLAG_CYCLE.indexOf(c.flag || '') + 1) % FLAG_CYCLE.length]; patch(c, { flag: nx }); } }, FLAG_ICON[c.flag] || '○'));
     else if (colDef.kind === 'rating') td.append(h('span', { class: 'stars' }, ...[1, 2, 3, 4, 5].map((n) => h('button', { class: (c.rating || 0) >= n ? 'on' : '', 'aria-label': n + ' estrellas', onclick: (e) => { e.stopPropagation(); patch(c, { rating: c.rating === n ? 0 : n }); } }, '★'))));
-    else if (colDef.kind === 'preview') td.append(c.thumb ? h('img', { class: 'lthumb', src: `cine://thumb/${c.id}`, alt: '', loading: 'lazy' }) : h('span', { class: 'lthumb ph' }, c.kind === 'audio' ? '♪' : ''));
+    else if (colDef.kind === 'preview') td.append(c.thumb ? h('img', { class: 'lthumb', src: thumbSrc(c), alt: '', loading: 'lazy' }) : h('span', { class: 'lthumb ph' }, c.kind === 'audio' ? '♪' : ''));
     else { td.textContent = colDef.text(c); td.title = String(colDef.text(c)); if (colDef.edit) { td.classList.add('editable'); td.addEventListener('dblclick', (e) => { e.stopPropagation(); editCell(td, c, colDef); }); } }
     return td;
   };

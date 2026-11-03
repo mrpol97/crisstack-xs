@@ -3,7 +3,7 @@ const path = require('node:path');
 const fsp = require('node:fs/promises');
 const { spawn } = require('node:child_process');
 
-const { buildVf, metadataArgs, presetArgsWithout } = require('./filters');
+const { buildVf, metadataArgs, presetArgsWithout, explainFfmpegError } = require('./filters');
 const unpacked = (p) => p.replace('app.asar' + path.sep, 'app.asar.unpacked' + path.sep);
 const FFMPEG = unpacked(require('ffmpeg-static'));
 const FFPROBE = unpacked(require('ffprobe-static').path);
@@ -92,13 +92,6 @@ const PRESETS = {
   h265_dailies: { label: 'H.265 dailies', ext: '.mp4', args: ['-c:v', 'libx265', '-preset', 'medium', '-crf', '24', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart'] },
 };
 
-const filterPath = (p) => p.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
-function fontFile() {
-  if (process.platform === 'darwin') return '/System/Library/Fonts/Helvetica.ttc';
-  if (process.platform === 'win32') return 'C\\:/Windows/Fonts/arial.ttf';
-  return '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
-}
-
 /**
  * opts: { preset, height?, lut?, burnTimecode?, burnName?, startTimecode? , onProgress?, signal?, duration? }
  */
@@ -121,7 +114,7 @@ async function transcode(input, output, opts) {
         if (m && opts.duration) opts.onProgress?.(Math.min(1, Number(m[1]) / 1e6 / opts.duration));
       });
       p.on('error', (e) => reject(new Error(`No se pudo ejecutar ffmpeg (${e.code || e.message}) en ${FFMPEG}`)));
-      p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(err.trim().split('\n').slice(-4).join('\n') || `ffmpeg salió con código ${code}`))));
+      p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(explainFfmpegError(err) || `ffmpeg salió con código ${code}`))));
     });
     const st = await fsp.stat(tmp);
     if (!st.size) throw new Error('ffmpeg terminó pero el fichero resultante está vacío');
@@ -146,7 +139,7 @@ async function previewFrame(input, opts = {}) {
       const chunks = []; let err = '';
       p.stdout.on('data', (d) => chunks.push(d)); p.stderr.on('data', (d) => (err += d));
       p.on('error', reject);
-      p.on('close', (code) => (code === 0 && chunks.length ? resolve(Buffer.concat(chunks)) : reject(new Error(err.trim().split('\n').slice(-3).join('\n') || 'No se pudo generar la previsualización'))));
+      p.on('close', (code) => (code === 0 && chunks.length ? resolve(Buffer.concat(chunks)) : reject(new Error(err.trim() ? explainFfmpegError(err) : 'No se pudo generar la previsualización'))));
     });
     return `data:image/jpeg;base64,${buf.toString('base64')}`;
   } finally { for (const f of temps) await fsp.rm(f, { force: true }); }
@@ -159,15 +152,47 @@ async function exportStill(input, output, opts = {}) {
   const p = STILL_PRESETS[opts.preset || 'jpeg'];
   if (!p) throw new Error('Preset de still desconocido');
   await fsp.mkdir(path.dirname(output), { recursive: true });
-  const vf = [];
-  if (opts.crop) { const c = opts.crop; vf.push(`crop=iw*${c.w}:ih*${c.h}:iw*${c.x}:ih*${c.y}`); }
-  if (opts.desqueeze && opts.desqueeze !== 1) vf.push(`scale=iw*${Number(opts.desqueeze)}:ih,setsar=1`);
-  if (opts.flip === 'h') vf.push('hflip'); if (opts.flip === 'v') vf.push('vflip');
-  if (opts.rotate === 90) vf.push('transpose=1'); else if (opts.rotate === 270) vf.push('transpose=2');
-  for (const l of opts.luts || []) vf.push(`lut3d='${filterPath(l)}'`);
-  if (opts.height) vf.push(`scale=-2:${Number(opts.height)}`);
-  await run(FFMPEG, ['-v', 'error', '-y', '-ss', String(opts.time || 0), '-i', input, '-frames:v', '1', ...(vf.length ? ['-vf', vf.join(',')] : []), ...p.args, output]);
+  const { vf } = await buildVf(input, { ...opts, overlays: [] });
+  try {
+    await run(FFMPEG, ['-v', 'error', '-y', '-ss', String(opts.time || 0), '-i', input, '-frames:v', '1', ...(vf.length ? ['-vf', vf.join(',')] : []), ...p.args, output]);
+  } catch (e) { throw new Error(explainFfmpegError(e.message)); }
   return output;
+}
+
+/** Miniatura con el look del clip: parte de la miniatura ya extraida (rapido) y le aplica recorte, giro, LUT y CDL. */
+async function lookThumb(thumbFile, output, opts = {}) {
+  await fsp.mkdir(path.dirname(output), { recursive: true });
+  const { vf } = await buildVf(thumbFile, { ...opts, overlays: [], height: undefined });
+  const tmp = output + '.part.jpg';
+  try {
+    await run(FFMPEG, ['-v', 'error', '-y', '-i', thumbFile, ...(vf.length ? ['-vf', vf.join(',')] : []), '-frames:v', '1', '-q:v', '4', tmp]);
+    await fsp.rename(tmp, output);
+  } catch (e) { await fsp.rm(tmp, { force: true }); throw new Error(explainFfmpegError(e.message)); }
+  return output;
+}
+
+/** Varios fotogramas repartidos por el clip (tira para elegir un momento), como data URLs. Cuatro ffmpeg a la vez como maximo. */
+async function filmstrip(input, { count = 12, duration = 0, width = 200, luts = [], crop, desqueeze, flip, rotate } = {}) {
+  const n = Math.max(2, Math.min(40, count)); const d = Math.max(0.1, duration || 1);
+  const { vf } = await buildVf(input, { luts, crop, desqueeze, flip, rotate, overlays: [] });
+  const chain = [...vf, `scale=${width}:-2`].join(',');
+  const times = Array.from({ length: n }, (_, i) => +((d * (i + 0.5)) / n).toFixed(3));
+  const out = new Array(n).fill(null);
+  let next = 0;
+  const worker = async () => {
+    while (next < n) {
+      const i = next++;
+      try {
+        out[i] = await new Promise((resolve, reject) => {
+          const p = spawn(FFMPEG, ['-v', 'error', '-ss', String(times[i]), '-i', input, '-frames:v', '1', '-vf', chain, '-f', 'image2pipe', '-vcodec', 'mjpeg', '-q:v', '5', '-'], { windowsHide: true });
+          const chunks = []; p.stdout.on('data', (c) => chunks.push(c)); p.on('error', reject);
+          p.on('close', (code) => (code === 0 && chunks.length ? resolve(`data:image/jpeg;base64,${Buffer.concat(chunks).toString('base64')}`) : reject(new Error('sin fotograma'))));
+        });
+      } catch { out[i] = null; }
+    }
+  };
+  await Promise.all(Array.from({ length: 4 }, worker));
+  return times.map((t, i) => ({ t, img: out[i] }));
 }
 
 /** Une varios clips en una sola transcodificacion (clip combinado). */
@@ -186,4 +211,4 @@ async function combineClips(files, output, opts) {
   return output;
 }
 
-module.exports = { probe, thumbnail, transcode, previewFrame, exportStill, combineClips, kindOf, run, PRESETS, STILL_PRESETS, FFMPEG, FFPROBE };
+module.exports = { probe, thumbnail, transcode, previewFrame, exportStill, lookThumb, filmstrip, combineClips, kindOf, run, PRESETS, STILL_PRESETS, FFMPEG, FFPROBE };

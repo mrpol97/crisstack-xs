@@ -22,18 +22,67 @@ const TC_RES = [['', 'Original'], ['2160', '2160p (4K UHD)'], ['1440', '1440p'],
 const TC_POS = [['bottom-left', 'Abajo izquierda'], ['bottom-center', 'Abajo centro'], ['bottom-right', 'Abajo derecha'], ['top-left', 'Arriba izquierda'], ['top-center', 'Arriba centro'], ['top-right', 'Arriba derecha'], ['center', 'Centro']];
 const META_OPTS = [['project', 'Proyecto'], ['production', 'Productora'], ['director', 'Director'], ['cinematographer', 'Dir. fotografía'], ['dit', 'DIT'], ['dataManager', 'Data manager'], ['copyright', 'Copyright'],
   ['scene', 'Escena'], ['shot', 'Plano'], ['take', 'Toma'], ['camera', 'Cámara'], ['reel', 'Reel'], ['shotId', 'ShotID'], ['notes', 'Notas'], ['flag', 'Marca'], ['rating', 'Valoración'], ['iso', 'ISO'], ['wb', 'WB'], ['lens', 'Lente'], ['shutter', 'Shutter']];
-const newTc = () => ({ preset: 'prores_proxy', res: '', height: '', lut: '', burnTimecode: false, burnName: false, textOn: false, text: '', textPos: 'bottom-left', textSize: 26, applyLooks: true, keepTimecode: true, s3: false, s3prefix: '', dir: '', metaFields: ['project', 'scene', 'shot', 'take', 'camera', 'reel', 'shotId', 'notes'] });
+/* ---------- textos en pantalla (timecode, nombre del clip y textos propios), con posicion libre ---------- */
+const OV_XY = { 'top-left': [0.14, 0.07], 'top-center': [0.5, 0.07], 'top-right': [0.86, 0.07], center: [0.5, 0.5], 'bottom-left': [0.14, 0.93], 'bottom-center': [0.5, 0.93], 'bottom-right': [0.86, 0.93] };
+const OV_DEF = { tc: { x: 0.5, y: 0.93, size: 3.6 }, name: { x: 0.16, y: 0.07, size: 3.1 }, text: { x: 0.5, y: 0.5, size: 4 } };
+const OV_LABEL = { tc: 'Timecode', name: 'Nombre del clip', text: 'Texto' };
+const OV_COLORS = [['white', 'Blanco'], ['yellow', 'Amarillo'], ['black', 'Negro'], ['red', 'Rojo'], ['green', 'Verde']];
+const OV_TOKENS = [['clip', 'Clip'], ['file', 'Fichero'], ['scene', 'Escena'], ['shot', 'Plano'], ['take', 'Toma'], ['camera', 'Cámara'], ['reel', 'Reel'], ['shotId', 'ShotID'], ['project', 'Proyecto'], ['date', 'Fecha'], ['notes', 'Notas']];
+let ovSeq = 0;
+const newOverlay = (kind, extra = {}) => ({ id: `ov${Date.now().toString(36)}${ovSeq++}`, kind, text: '', enabled: true, color: 'white', box: true, ...OV_DEF[kind], ...extra });
+/** Los ajustes de versiones anteriores (burnTimecode, burnName, texto libre) pasan a ser textos en pantalla. */
+function migrateOverlays(t) {
+  if (Array.isArray(t.overlays)) return;
+  t.overlays = [];
+  if (t.burnTimecode) t.overlays.push(newOverlay('tc'));
+  if (t.burnName) t.overlays.push(newOverlay('name'));
+  if (t.textOn && String(t.text || '').trim()) { const [x, y] = OV_XY[t.textPos] || OV_XY['bottom-left']; t.overlays.push(newOverlay('text', { text: String(t.text), x, y, size: +(100 / (Number(t.textSize) || 26)).toFixed(1) })); }
+}
+const posKey = (o) => Object.entries(OV_XY).find(([, [x, y]]) => Math.abs(x - o.x) < 0.015 && Math.abs(y - o.y) < 0.015)?.[0] || 'custom';
+
+const newTc = () => ({ preset: 'prores_proxy', res: '', height: '', lut: '', overlays: [], applyLooks: true, keepTimecode: true, s3: false, s3prefix: '', dir: '', metaFields: ['project', 'scene', 'shot', 'take', 'camera', 'reel', 'shotId', 'notes'] });
 function tcCfg(t) {
   const height = t.res === 'custom' ? (Number(t.height) || undefined) : t.res ? Number(t.res) : undefined;
-  return { preset: t.preset, height, lut: t.lut || undefined, burnTimecode: !!t.burnTimecode, burnName: !!t.burnName,
-    text: t.textOn && String(t.text).trim() ? { value: String(t.text).trim(), pos: t.textPos, size: Number(t.textSize) || 26 } : undefined,
+  migrateOverlays(t);
+  return { preset: t.preset, height, lut: t.lut || undefined,
+    overlays: t.overlays.filter((o) => o.enabled !== false && (o.kind !== 'text' || String(o.text || '').trim())).map(({ id, ...o }) => o),
     applyLooks: t.applyLooks !== false, keepTimecode: t.keepTimecode !== false, s3: !!t.s3, s3prefix: t.s3prefix || '', dir: t.dir || undefined, metaFields: [...(t.metaFields || [])] };
 }
 
+/** Lista editable de textos en pantalla. drag: true cuando hay una previsualizacion donde arrastrarlos. */
+function overlayEditor(t, { touch, onChange, drag }) {
+  migrateOverlays(t);
+  const lab = (label, el, w) => h('label', { class: 'f', style: w ? `width:${w}` : '' }, label, el);
+  const rows = t.overlays.map((o, i) => {
+    const textIn = o.kind === 'tc' ? null : h('input', { type: 'text', value: o.text, placeholder: o.kind === 'name' ? 'Vacío = nombre del fichero' : 'p. ej. COPIA DE TRABAJO · Esc {scene} Toma {take}', 'aria-label': 'Texto a imprimir', style: 'flex:1;min-width:180px', oninput: (e) => { o.text = e.target.value; touch(); } });
+    const row = h('div', { class: 'ovrow' + (o.enabled === false ? ' off' : '') },
+      h('div', { class: 'row', style: 'flex-wrap:nowrap' },
+        h('label', { class: 'chip' }, h('input', { type: 'checkbox', checked: o.enabled !== false, onchange: (e) => { o.enabled = e.target.checked; touch(); onChange?.(); } }), OV_LABEL[o.kind]),
+        textIn || h('span', { class: 'mut', style: 'flex:1' }, 'Cuenta el timecode del clip fotograma a fotograma'),
+        h('button', { type: 'button', class: 'btn mini danger', 'aria-label': `Quitar ${OV_LABEL[o.kind]}`, onclick: () => { t.overlays.splice(i, 1); touch(); onChange?.(); } }, 'Quitar')),
+      h('div', { class: 'row' },
+        lab('Posición', h('select', { onchange: (e) => { if (e.target.value !== 'custom') { [o.x, o.y] = OV_XY[e.target.value]; touch(); onChange?.(); } } },
+          ...Object.keys(OV_XY).map((k) => h('option', { value: k, selected: posKey(o) === k }, TC_POS.find((p) => p[0] === k)[1])), h('option', { value: 'custom', selected: posKey(o) === 'custom' }, 'Personalizada (arrastrada)')), '170px'),
+        lab('Tamaño (% del alto)', h('input', { type: 'number', min: 1, max: 15, step: 0.5, value: o.size, oninput: (e) => { o.size = clampN(Number(e.target.value) || OV_DEF[o.kind].size, 1, 15); touch(); } }), '130px'),
+        lab('Color', h('select', { onchange: (e) => { o.color = e.target.value; touch(); } }, ...OV_COLORS.map(([v, l]) => h('option', { value: v, selected: (o.color || 'white') === v }, l))), '110px'),
+        h('label', { class: 'chip', style: 'align-self:end' }, h('input', { type: 'checkbox', checked: o.box !== false, onchange: (e) => { o.box = e.target.checked; touch(); } }), 'Fondo')),
+      textIn ? h('div', { class: 'tokens' }, h('span', { class: 'mut', style: 'font-size:11px' }, 'Insertar dato del clip:'), ...OV_TOKENS.map(([k, l]) => h('button', { type: 'button', title: `{${k}}`, onclick: () => { const a = textIn.selectionStart ?? textIn.value.length; textIn.setRangeText(`{${k}}`, a, textIn.selectionEnd ?? a, 'end'); o.text = textIn.value; textIn.focus(); touch(); } }, l))) : '');
+    const posSel = row.querySelector('select'); // si se arrastra el texto en la previsualizacion, la lista pasa a «Personalizada»
+    const onMoved = (ev) => { if (!posSel.isConnected) return document.removeEventListener('ov-moved', onMoved); if (ev.detail === o.id) posSel.value = posKey(o); };
+    document.addEventListener('ov-moved', onMoved);
+    return row;
+  });
+  const add = (kind, label) => h('button', { type: 'button', class: 'btn', onclick: () => { t.overlays.push(newOverlay(kind)); touch(); onChange?.(); } }, label);
+  return h('div', { class: 'ovbox', style: 'margin-top:12px' },
+    h('div', { class: 'row', style: 'justify-content:space-between' }, h('b', {}, 'Textos en pantalla'), h('span', { class: 'row' }, add('tc', '+ Timecode'), add('name', '+ Nombre del clip'), add('text', '+ Texto propio'))),
+    h('div', { class: 'mut', style: 'margin:4px 0' }, drag ? 'Arrastra los recuadros azules de la previsualización para poner cada texto donde quieras. También puedes cambiar tamaño, color y fondo.' : 'Elige dónde va cada texto. En Transcodificar puedes además arrastrarlos sobre la previsualización.'),
+    rows.length ? h('div', { class: 'ovlist' }, ...rows) : h('div', { class: 'mut' }, 'Sin textos. Añade timecode, el nombre del clip o un texto propio (con datos del clip como la escena o la toma).'));
+}
+
 /** Panel de ajustes. t: objeto de ajustes (se modifica); presets: [{id,label}]; custom: nombres de campos propios; onChange: cambios que redibujan; onTouch: cualquier cambio. */
-function tcPanel(t, { presets, custom = [], onChange, onTouch }) {
+function tcPanel(t, { presets, custom = [], onChange, onTouch, drag = false }) {
   const touch = () => onTouch?.();
-  const chip = (label, key, title = '') => h('label', { class: 'chip', title }, h('input', { type: 'checkbox', checked: !!t[key], onchange: (e) => { t[key] = e.target.checked; touch(); if (['textOn', 's3'].includes(key)) onChange?.(); } }), label);
+  const chip = (label, key, title = '') => h('label', { class: 'chip', title }, h('input', { type: 'checkbox', checked: !!t[key], onchange: (e) => { t[key] = e.target.checked; touch(); if (key === 's3') onChange?.(); } }), label);
   const sel = (label, opts, val, fn, w = '') => h('label', { class: 'f', style: w ? `width:${w}` : '' }, label, h('select', { onchange: (e) => { fn(e.target.value); touch(); } }, ...opts.map(([v, l]) => h('option', { value: v, selected: String(v) === String(val ?? '') }, l))));
   const metaAll = [...META_OPTS, ...custom.map((n) => ['custom:' + n, n + ' (propio)'])];
   const metaChip = ([id, label]) => h('label', { class: 'chip' }, h('input', { type: 'checkbox', checked: t.metaFields.includes(id), onchange: (e) => { t.metaFields = e.target.checked ? [...new Set([...t.metaFields, id])] : t.metaFields.filter((x) => x !== id); touch(); } }), label);
@@ -42,17 +91,11 @@ function tcPanel(t, { presets, custom = [], onChange, onTouch }) {
       sel('Formato', presets.map((p) => [p.id, p.label]), t.preset, (v) => (t.preset = v), '220px'),
       sel('Píxeles (altura)', TC_RES, t.res, (v) => { t.res = v; onChange?.(); }, '190px'),
       t.res === 'custom' ? h('label', { class: 'f', style: 'width:110px' }, 'Altura px', h('input', { type: 'number', min: 64, step: 2, value: t.height, placeholder: '1080', oninput: (e) => { t.height = e.target.value; touch(); } })) : ''),
-    h('div', { class: 'row', style: 'margin-top:10px' },
-      h('button', { class: 'btn', onclick: async () => { const p = await api.invoke('dialog:file', [{ name: 'LUT 3D', extensions: ['cube'] }]); if (p) { t.lut = p; touch(); onChange?.(); } } }, t.lut ? 'Cambiar LUT…' : 'Añadir LUT .cube…'),
-      t.lut ? h('span', { class: 'mono mut', title: t.lut }, t.lut.split(/[\\/]/).pop()) : h('span', { class: 'mut' }, 'Sin LUT extra (los looks de cada clip se aplican aparte)'),
-      t.lut ? h('button', { class: 'btn', onclick: () => { t.lut = ''; touch(); onChange?.(); } }, 'Quitar') : ''),
+    h('div', { class: 'col', style: 'margin-top:10px;gap:4px' }, h('div', { class: 'mut' }, 'LUT extra para toda la salida (los looks de cada clip se aplican aparte)'),
+      lutField(t.lut || '', (p) => { t.lut = p; touch(); }, { none: 'Sin LUT extra' })),
     h('div', { class: 'chips', style: 'margin-top:10px' },
-      chip('Timecode quemado', 'burnTimecode'), chip('Nombre del clip quemado', 'burnName'), chip('Texto libre quemado', 'textOn', 'Escribe un texto que se imprime sobre la imagen'),
       chip('Aplicar looks y transformaciones', 'applyLooks', 'Aplica el CDL, la LUT y el recorte/giro de cada clip'), chip('Conservar el timecode del original', 'keepTimecode'), chip('Subir a S3', 's3')),
-    t.textOn ? h('div', { class: 'row', style: 'margin-top:8px' },
-      h('label', { class: 'f', style: 'flex:1;min-width:220px' }, 'Texto', h('input', { type: 'text', value: t.text, placeholder: 'p. ej. COPIA DE TRABAJO — NO DISTRIBUIR', oninput: (e) => { t.text = e.target.value; touch(); } })),
-      sel('Posición', TC_POS, t.textPos, (v) => (t.textPos = v), '170px'),
-      sel('Tamaño', [['36', 'Pequeño'], ['26', 'Medio'], ['18', 'Grande']], String(t.textSize), (v) => (t.textSize = Number(v)), '120px')) : '',
+    overlayEditor(t, { touch, onChange, drag }),
     t.s3 ? h('label', { class: 'f', style: 'margin-top:8px;max-width:360px' }, 'Prefijo en el bucket S3', h('input', { type: 'text', value: t.s3prefix, placeholder: 'dailies/dia01', oninput: (e) => { t.s3prefix = e.target.value; touch(); } })) : '',
     h('div', { class: 'row', style: 'margin-top:10px' },
       h('button', { class: 'btn', onclick: async () => { const [p] = await api.invoke('dialog:folder', false); if (p) { t.dir = p; touch(); onChange?.(); } } }, 'Carpeta de salida…'),
@@ -125,7 +168,7 @@ async function viewOffload2() {
     h('h2', {}, 'Transcodificar al terminar'),
     h('div', { class: 'card col' },
       h('label', { class: 'chip', style: 'align-self:flex-start' }, h('input', { type: 'checkbox', checked: !!o.tcOn, onchange: (e) => { o.tcOn = e.target.checked; render(); } }), 'Transcodificar los clips de vídeo al terminar la copia'),
-      o.tcOn ? tcPanel(o.tc, { presets, custom: fields, onChange: render }) : h('div', { class: 'mut' }, 'Al activarlo verás aquí las opciones: formato, píxeles, LUT, timecode y nombre quemados, texto, looks, S3, carpeta de salida y metadatos.')),
+      o.tcOn ? tcPanel(o.tc, { presets, custom: fields, onChange: render }) : h('div', { class: 'mut' }, 'Al activarlo verás aquí las opciones: formato, píxeles, LUT, textos en pantalla (timecode, nombre, texto propio), looks, S3, carpeta de salida y metadatos.')),
     h('div', { class: 'card col', style: 'margin-top:10px' }, h('div', { class: 'row' },
       h('label', { class: 'f' }, 'Workflow guardado', h('select', { id: 'wfSel' }, h('option', { value: '' }, '—'), ...wfs.map((w) => h('option', { value: w.name }, w.name)))),
       h('button', { class: 'btn', style: 'align-self:end', onclick: () => { const w = wfs.find((x) => x.name === $('#wfSel').value); if (w) { Object.assign(o, w.cfg, { running: false }); render(); toast('Workflow cargado'); } } }, 'Cargar'),
@@ -216,18 +259,55 @@ async function viewTranscode2() {
   if (!videos.some((c) => c.id === pv.clipId)) pv.clipId = (ids[0] || videos[0]?.id) ?? null;
 
   const imgBox = h('div', { class: 'prevbox' });
-  const drawPrev = () => imgBox.replaceChildren(pv.busy ? h('div', { class: 'mut' }, 'Generando previsualización…') : pv.err ? h('div', { class: 'bad' }, pv.err) : pv.img ? h('img', { src: pv.img, alt: 'Previsualización del transcode' }) : h('div', { class: 'mut' }, videos.length ? 'Pulsa «Actualizar previsualización» para ver cómo quedará con los ajustes elegidos.' : 'Importa o copia algún clip de vídeo para previsualizar.'));
+  let mctx; const measure = (text, px) => { mctx = mctx || document.createElement('canvas').getContext('2d'); mctx.font = `${px}px "DejaVu Sans", sans-serif`; return mctx.measureText(text).width; };
+  const sampleName = () => videos.find((v) => v.id === pv.clipId)?.name || 'CLIP.mov';
+  const ovSample = (o) => (o.kind === 'tc' ? '00:00:00:00' : o.kind === 'name' ? (String(o.text || '').trim() || sampleName()) : String(o.text || '').trim());
+  const shown = () => (t.overlays || []).filter((o) => o.enabled !== false && (o.kind !== 'text' || String(o.text || '').trim()));
+  /** Imagen de la previsualizacion con un recuadro arrastrable sobre cada texto. */
+  const previewWithHandles = () => {
+    const img = h('img', { src: pv.img, alt: 'Previsualización del transcode' });
+    const wrap = h('div', { class: 'prevwrap' }, img);
+    const pairs = shown().map((o) => {
+      const el = h('div', { class: 'ovh', tabindex: 0, role: 'button', 'aria-label': `Mover ${OV_LABEL[o.kind]}: flechas del teclado o arrastrar`, title: 'Arrástralo para colocar este texto' }, h('span', { class: 'ovtag' }, OV_LABEL[o.kind]));
+      wrap.append(el); return [o, el];
+    });
+    const place = () => {
+      const W = img.clientWidth, H = img.clientHeight; if (!W || !H) return;
+      for (const [o, el] of pairs) {
+        const px = H * o.size / 100, pad = o.box !== false ? 12 : 4, w = measure(ovSample(o) || 'Texto', px) + pad, hh = px * 1.3 + pad;
+        Object.assign(el.style, { width: w + 'px', height: hh + 'px', left: clampN(o.x * W - w / 2, W * 0.01, W - w - W * 0.01) + 'px', top: clampN(o.y * H - hh / 2, H * 0.01, H - hh - H * 0.01) + 'px' });
+      }
+    };
+    let kt; const settle = (o) => { o.x = +clampN(o.x, 0, 1).toFixed(4); o.y = +clampN(o.y, 0, 1).toFixed(4); document.dispatchEvent(new CustomEvent('ov-moved', { detail: o.id })); clearTimeout(kt); kt = setTimeout(() => pv.refresh(), 450); };
+    for (const [o, el] of pairs) {
+      el.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); try { el.setPointerCapture(e.pointerId); } catch { /* sin captura */ } el.classList.add('drag');
+        const r = img.getBoundingClientRect(), br = el.getBoundingClientRect(), gx = e.clientX - (br.left + br.width / 2), gy = e.clientY - (br.top + br.height / 2);
+        const move = (ev) => { o.x = clampN((ev.clientX - gx - r.left) / r.width, 0, 1); o.y = clampN((ev.clientY - gy - r.top) / r.height, 0, 1); place(); };
+        const up = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.classList.remove('drag'); settle(o); };
+        el.addEventListener('pointermove', move); el.addEventListener('pointerup', up);
+      });
+      el.addEventListener('keydown', (e) => {
+        const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key]; if (!d) return;
+        e.preventDefault(); const s = (e.shiftKey ? 0.05 : 0.005); o.x = clampN(o.x + d[0] * s, 0, 1); o.y = clampN(o.y + d[1] * s, 0, 1); place(); settle(o);
+      });
+    }
+    img.addEventListener('load', place); if (typeof ResizeObserver !== 'undefined') new ResizeObserver(place).observe(img); place();
+    return wrap;
+  };
+  const drawPrev = () => imgBox.replaceChildren(pv.busy ? h('div', { class: 'mut' }, 'Generando previsualización…') : pv.err ? h('div', { class: 'bad' }, pv.err) : pv.img ? previewWithHandles() : h('div', { class: 'mut' }, videos.length ? 'Pulsa «Actualizar previsualización» para ver cómo quedará con los ajustes elegidos.' : 'Importa o copia algún clip de vídeo para previsualizar.'));
   let timer = null;
   const refreshPrev = async () => {
-    const c = videos.find((v) => v.id === pv.clipId); if (!c) return; pv.busy = true; pv.err = ''; drawPrev();
+    const c = videos.find((v) => v.id === pv.clipId); if (!c) return; pv.busy = true; pv.err = ''; pv.draw();
     try { pv.img = await api.invoke('transcode:preview', c.id, tcCfg(t), Math.max(0, (c.meta?.duration || 2) * pv.pos - 0.05)); } catch (e) { pv.err = errText(e); pv.img = ''; }
-    pv.busy = false; drawPrev();
+    pv.busy = false; pv.draw();
   };
-  const touch = () => { clearTimeout(timer); timer = setTimeout(() => { if (pv.img) refreshPrev(); }, 700); }; // si ya hay imagen, se actualiza sola al cambiar ajustes
+  pv.draw = drawPrev; pv.refresh = refreshPrev; // la vista se redibuja al cambiar ajustes: los temporizadores siempre usan la ultima
+  const touch = () => { clearTimeout(timer); timer = setTimeout(() => { if (pv.img) pv.refresh(); }, 700); }; // si ya hay imagen, se actualiza sola al cambiar ajustes
 
   main.append(h('p', { class: 'mut', style: 'margin-top:0' }, `Se transcodificarán ${ids.length} ${ids.length === 1 ? 'clip' : 'clips'} de vídeo${state.lib.sel.size ? ' seleccionados' : ' (toda la biblioteca)'}.`),
     h('div', { class: 'tcgrid' },
-      h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Ajustes de transcode'), tcPanel(t, { presets, custom: fields, onChange: render, onTouch: touch }),
+      h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Ajustes de transcode'), tcPanel(t, { presets, custom: fields, onChange: render, onTouch: touch, drag: true }),
         h('div', { class: 'row', style: 'margin-top:14px' },
           h('button', { class: 'btn primary', disabled: !ids.length, onclick: () => { state.tcResults = null; api.invoke('transcode:start', ids, tcCfg(t)); toast('Transcodificación en cola: sigue el progreso en la barra inferior'); } }, 'Iniciar transcodificación'),
           h('button', { class: 'btn', disabled: ids.length < 2, title: 'Une los clips en un solo fichero', onclick: async () => { try { toast('Creando clip combinado…'); const f = await api.invoke('combine:run', ids, t.preset, tcCfg(t).height); toast('Clip combinado: ' + f); api.invoke('shell:reveal', f); } catch (e) { toast('Error: ' + errText(e)); } } }, 'Unir en un clip'))),

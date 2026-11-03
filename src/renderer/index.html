@@ -17,6 +17,7 @@
       <button data-view="offload" title="Offload y configuración de workflow">Offload</button>
       <span class="sep"></span>
       <button data-view="transcode">Transcodificar</button>
+      <button data-view="stills" title="Capturar fotogramas por escena y elegir el momento de la miniatura">Stills</button>
       <span class="sep"></span>
       <button data-view="reports">Informes</button>
       <button data-view="exchange">Intercambio</button>
@@ -24,7 +25,7 @@
       <button data-view="verify">Verificar</button>
     </div>
     <div class="grow"></div>
-    <button id="qcBtn" class="tb" title="Diseño QC: más espacio para el reproductor">QC</button>
+    <button id="qcBtn" class="tb" aria-pressed="false" title="Modo revisión (QC, control de calidad): oculta las carpetas y da más espacio al reproductor para revisar las tomas una a una">Modo revisión</button>
     <button data-view="settings" class="tb">Ajustes</button>
   </header>
   <div id="work"><div id="libHost"></div></div>
@@ -45,6 +46,7 @@
 <script src="app.js"></script>
 <script src="app2.js"></script>
 <script src="app4.js"></script>
+<script src="app5.js"></script>
 <script src="app3.js"></script>
 </body>
 </html>

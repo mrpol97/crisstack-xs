@@ -32,8 +32,8 @@
 
 <div class="cover">
   <h1>CrisStack XS</h1>
-  <div class="sub">Guía rápida de uso · versión 0.4</div>
-  <span class="tag">Offload verificado</span><span class="tag">Biblioteca</span><span class="tag">Color</span><span class="tag">Informes</span><span class="tag">Transcodificación</span>
+  <div class="sub">Guía rápida de uso · versión 0.5</div>
+  <span class="tag">Offload verificado</span><span class="tag">Biblioteca</span><span class="tag">Color</span><span class="tag">Informes</span><span class="tag">Transcodificación</span><span class="tag">Stills por escena</span>
 </div>
 
 <p>CrisStack XS es una herramienta de DIT / gestión de datos de rodaje: copia las tarjetas de cámara y de sonido a varios destinos comprobando cada fichero con un checksum, ordena el material en una biblioteca con sus metadatos, permite revisarlo con el look aplicado, genera informes y prepara las copias de trabajo.</p>
@@ -90,6 +90,9 @@
 <figure><img src="img/n2-carpetas.png" alt="Vista carpetas"><figcaption>Vista de carpetas: clips, tamaño y tipos de cada una.</figcaption></figure>
 <figure><img src="img/p2-comparar-biblioteca.png" alt="Comparar"><figcaption>Comparar dos clips dentro de la biblioteca.</figcaption></figure>
 
+<p><b>Miniaturas con look.</b> Con la casilla «Miniaturas con look» (lista y miniaturas) cada clip muestra su miniatura ya con la LUT, el ajuste de color y la transformación que tiene aplicados, así ves el resultado de un vistazo. Se rehacen solas cuando cambias el look y se pueden desactivar. Para elegir otro momento como miniatura, usa el botón <b>Miniatura</b> del reproductor o el espacio <b>Stills</b>.</p>
+<figure><img src="img/q4-miniaturas-con-look.png" alt="Miniaturas con look"><figcaption>Miniaturas con la LUT aplicada (los clips de «Dia 1» llevan una LUT oscura) y el interruptor «Miniaturas con look».</figcaption></figure>
+<p><b>Comprobar ficheros.</b> Este botón busca los clips cuyo fichero ya no está (disco desconectado, carpeta movida o borrada) y te deja quitarlos de la biblioteca. Al reproducir un clip sin fichero, la app te lo explica y te ofrece ir a Relink o quitarlo.</p>
 <h3 class="pb">Columnas de la lista</h3>
 <p>Pulsa <b>Columnas…</b> para elegir cuáles ver: flag (incluido <i>circled</i>), rating, preview, nombre, duración, frames, cámara, ISO, WB, shutter, shutter angle, sensor FPS, filtro ND, FPS del proyecto, modelo de lente, códec, tipo de fichero, resolución, fecha de registro, formato de TC, TC inicio y final, ShotID, reel/tape, fecha de grabación, fabricante, pistas y códec de audio, tamaño, información de look, Camera T, ISO nativo, espacio de color RAW, volúmenes, backups, escena, plano, toma y notas.</p>
 <ul>
@@ -99,11 +102,17 @@
 </ul>
 
 <h2 class="pb">4. Revisar: reproducción y color</h2>
-<p>Doble clic en un clip para reproducirlo en el panel derecho. Debajo del reproductor tienes color falso, zebra, clipping y peaking, líneas de encuadre, scopes (waveform, histograma, vectorscopio), un botón para guardar un still con el look aplicado y otro para usar el fotograma actual como miniatura. El botón <b>QC</b> de la barra superior da más espacio al reproductor.</p>
+<p>Doble clic en un clip para reproducirlo en el panel derecho. Debajo del reproductor tienes color falso, zebra, clipping y peaking, líneas de encuadre, scopes (waveform, histograma, vectorscopio), un botón para guardar un still con el look aplicado y otro para usar el fotograma actual como miniatura. El botón <b>Modo revisión</b> (QC, control de calidad) de la barra superior oculta el árbol de carpetas y da todo el espacio al reproductor: pensado para ir revisando las tomas una a una.</p>
 <figure><img src="img/3b-player-fx.png" alt="Reproductor"><figcaption>Reproductor con color falso, scopes y líneas de encuadre.</figcaption></figure>
+<figure><img src="img/q0-modo-revision.png" alt="Modo revisión"><figcaption>Modo revisión: lista estrecha de clips a la izquierda y todo el espacio para el reproductor y los datos del clip.</figcaption></figure>
+<h3>Paneles flotantes: colócalos donde quieras</h3>
+<p>El reproductor y el panel de <b>Color y transformación</b> tienen un botón <b>⇱ Separar</b>. Al pulsarlo se convierten en ventanas flotantes: arrastra la barra superior para moverlas, tira de la esquina inferior derecha para cambiar su tamaño y pulsa <b>Acoplar</b> para devolverlas a la columna derecha. La posición y el tamaño se recuerdan. Así puedes poner el vídeo grande en un lado de la pantalla y los controles de color en otro (o en otro monitor).</p>
+<figure><img src="img/q1-paneles-flotantes.png" alt="Paneles flotantes"><figcaption>Reproductor y color separados, cada uno en su sitio.</figcaption></figure>
+<h3>LUTs guardadas</h3>
+<p>Las LUTs que importes con <b>Importar…</b> (en el panel de color, en <b>LUT…</b> de la biblioteca o en Transcodificar) se copian a la app y quedan guardadas: la próxima vez salen en la lista desplegable y no hace falta buscarlas en el Finder. <b>Gestionar…</b> permite renombrarlas, quitarlas o importar una carpeta entera de LUTs. Las LUT 1D se convierten solas a 3D.</p>
 <h3>Una LUT para muchos clips y un ajuste fino en cada uno</h3>
 <ol>
-  <li>En la biblioteca pulsa <b>LUT…</b>, elige la LUT <code>.cube</code> y dónde se aplica: <b>los clips seleccionados</b>, <b>una carpeta entera</b> (con sus subcarpetas) o <b>toda la biblioteca</b>.</li>
+  <li>En la biblioteca pulsa <b>LUT…</b>, elige la LUT (de las guardadas, o importa una nueva) y dónde se aplica: <b>los clips seleccionados</b>, <b>una carpeta entera</b> (con sus subcarpetas) o <b>toda la biblioteca</b>.</li>
   <li>Después selecciona un clip y, en <b>Color y transformación</b> del inspector, retoca su color con slope, offset, power y saturación. La LUT es la base y tu ajuste se aplica encima.</li>
   <li>Si prefieres lo contrario (ajustar antes de la LUT) cambia el <b>Orden de aplicación</b> en ese mismo panel.</li>
 </ol>
@@ -116,19 +125,30 @@
   <tr><td>Formato</td><td>ProRes Proxy/422/HQ, DNxHR LB/SQ, H.264 o H.265.</td></tr>
   <tr><td>Píxeles</td><td>Tamaño de salida: original, 2160, 1440, 1080, 720, 540, 360 o una altura personalizada.</td></tr>
   <tr><td>LUT</td><td>LUT extra para esta salida (además del look de cada clip).</td></tr>
-  <tr><td>Timecode quemado · Nombre del clip quemado · Texto libre</td><td>Se imprimen sobre la imagen. El texto libre admite posición y tamaño.</td></tr>
+  <tr><td><b>Textos en pantalla</b></td><td>Timecode, nombre del clip y todos los textos propios que quieras. Cada uno tiene posición, tamaño, color y fondo; se colocan <b>arrastrándolos sobre la previsualización</b>. Los textos propios admiten datos del clip: <code>{scene}</code>, <code>{shot}</code>, <code>{take}</code>, <code>{camera}</code>, <code>{reel}</code>, <code>{shotId}</code>, <code>{project}</code>, <code>{clip}</code>, <code>{date}</code>… (hay botones para insertarlos).</td></tr>
   <tr><td>Aplicar looks y transformaciones</td><td>Usa la LUT, el ajuste de color y el recorte/giro de cada clip.</td></tr>
   <tr><td>Conservar el timecode</td><td>El fichero resultante mantiene el TC del original.</td></tr>
   <tr><td>Subir a S3</td><td>Sube los resultados al bucket de Ajustes, con un prefijo opcional.</td></tr>
   <tr><td>Carpeta de salida</td><td>Dónde se guardan los transcodes.</td></tr>
   <tr><td><b>Ajustes de transcode · metadatos</b></td><td>Marcas qué datos viajan dentro del fichero: proyecto, productora, director, DIT, copyright, escena, plano, toma, cámara, reel, ShotID, notas, ISO, WB, lente… y tus columnas propias.</td></tr>
 </table>
-<h3>Previsualización</h3>
-<p>A la derecha ves <b>cómo va a quedar</b> un fotograma con todos los ajustes puestos (LUT, looks, recorte, tamaño y los textos quemados). Elige el clip y el momento, y pulsa <b>Actualizar previsualización</b>; una vez generada, se actualiza sola al cambiar los ajustes.</p>
-<figure><img src="img/p4-transcode-ajustes.png" alt="Ajustes de transcode"><figcaption>Ajustes de transcode, metadatos y previsualización.</figcaption></figure>
+<h3>Previsualización y textos arrastrables</h3>
+<p>A la derecha ves <b>cómo va a quedar</b> un fotograma con todos los ajustes puestos (LUT, looks, recorte, tamaño y los textos). Elige el clip y el momento, y pulsa <b>Actualizar previsualización</b>; una vez generada, se actualiza sola al cambiar los ajustes. Sobre la imagen aparece un <b>recuadro azul</b> por cada texto: <b>arrástralo</b> (o muévelo con las flechas del teclado) y suéltalo donde quieras; la imagen se rehace con el texto en su nuevo sitio. Los textos usan una fuente incluida en la app, así que salen igual en Mac y en Windows.</p>
+<figure><img src="img/q2-transcode-textos.png" alt="Textos en pantalla"><figcaption>Timecode, nombre del clip y un texto propio con datos del clip, colocados arrastrando.</figcaption></figure>
 <p>El resultado se registra en la carpeta <b>Transcodes</b> de la biblioteca con su información y tamaño reales, y una tabla por clip muestra «Correcto» o el motivo exacto del error. Un fichero solo se da por bueno si ffmpeg termina y tiene contenido. Los errores quedan además en <code>transcode.log</code>.</p>
 
-<h2 class="pb">6. Informes</h2>
+<h2 class="pb">6. Stills por escena</h2>
+<p>El espacio <b>Stills</b> (barra superior) sirve para sacar fotogramas de los clips y guardarlos <b>agrupados por escena</b>, con el look aplicado.</p>
+<ol>
+  <li>Elige la <b>escena</b> (la sacan del campo «Escena» de tus clips) y el <b>clip</b>. Si vienes de la biblioteca con un clip seleccionado, ya aparece elegido.</li>
+  <li>Busca el momento: pulsa en un fotograma de la <b>tira</b> (12 fotogramas repartidos por el clip, con el look puesto), usa la barra del reproductor o las teclas <kbd>←</kbd> <kbd>→</kbd> (o los botones −1 s, ◀ 1f, 1f ▶, +1 s).</li>
+  <li>Pulsa <b>📷 Guardar still</b> (JPEG, PNG o TIFF de 16 bits; puedes añadir una nota). Se guarda en <code>Documentos/CrisStack Stills/&lt;proyecto&gt;/Escena_&lt;n&gt;/</code> con un nombre como <code>Esc12_PlB_T3_A001_10-00-04-12.jpg</code>.</li>
+  <li><b>Usar como miniatura del clip</b> deja ese fotograma como miniatura en la biblioteca.</li>
+</ol>
+<figure><img src="img/q3-stills.png" alt="Stills por escena"><figcaption>Visor con la tira de fotogramas y los stills de la escena a la derecha.</figcaption></figure>
+<p>A la derecha ves los stills de la escena (o de todas): puedes escribir una nota, abrirlos grandes, mostrarlos en su carpeta o borrarlos. <b>Informe PDF de esta escena</b> e <b>Informe de todas</b> generan una hoja con los stills agrupados por escena, con la cabecera del proyecto. El botón <b>📷 Still</b> del reproductor de la biblioteca también guarda en su escena.</p>
+
+<h2 class="pb">7. Informes</h2>
 <p>En <b>Informes</b> puedes crear <b>todos los que necesites</b>. Cada uno es una configuración guardada: nombre, tipo (volumen/checksums, día de rodaje, lista de clips, miniaturas, contact print), formato PDF o HTML, tema claro u oscuro, título propio, qué clips incluye (toda la biblioteca, la selección, o los de cada offload) y, en la lista de clips, <b>qué columnas</b> salen (también las tuyas).</p>
 <ul>
   <li><b>Nuevo informe</b>, <b>Guardar</b>, <b>Guardar como nuevo</b> (duplicar), <b>Generar ahora</b> y <b>Eliminar</b>.</li>
@@ -139,14 +159,14 @@
 <figure><img src="img/p3-informes.png" alt="Informes"><figcaption>Varias configuraciones de informe guardadas.</figcaption></figure>
 <p>La cabecera de cada informe lleva el logo, la productora y el equipo del proyecto; al pie, el copyright.</p>
 
-<h2>7. Otras herramientas</h2>
+<h2>8. Otras herramientas</h2>
 <ul>
   <li><b>Intercambio:</b> exporta a Avid ALE, Premiere/FCP7 XML, FCPXML (Final Cut Pro X y Resolve), CDL (.ccc), EDL y CSV; importa hojas de rodaje en CSV o ALE emparejando por nombre, timecode o escena/plano/toma.</li>
   <li><b>Archivo:</b> sellado ASC MHL con historial, relink de ficheros movidos, detección de secuencias de imagen y subida a S3.</li>
   <li><b>Verificar:</b> comprueba una carpeta ya copiada contra su lista MHL.</li>
 </ul>
 
-<h2>8. Atajos de teclado</h2>
+<h2>9. Atajos de teclado</h2>
 <table>
   <tr><th>Tecla</th><th>Acción</th></tr>
   <tr><td><kbd>G</kbd> <kbd>B</kbd> <kbd>H</kbd> <kbd>0</kbd></td><td>Marcar bueno, malo, pendiente o quitar marca (en la selección)</td></tr>
@@ -159,11 +179,13 @@
 </table>
 <p>Los atajos de la biblioteca se pueden cambiar en <b>Ajustes → Atajos de teclado</b>.</p>
 
-<h2>9. Si algo no va bien</h2>
+<h2>10. Si algo no va bien</h2>
 <table>
   <tr><th>Síntoma</th><th>Qué hacer</th></tr>
   <tr><td>macOS dice que la app «está dañada» o no deja abrirla</td><td>Clic derecho → <b>Abrir</b>. Si persiste, en Terminal: <code>xattr -cr "/Applications/CrisStack XS.app"</code> (la app no está firmada con certificado de Apple).</td></tr>
   <tr><td>Un clip no se transcodifica</td><td>Mira la tabla «Último resultado» en <b>Transcodificar</b>: indica el motivo (fichero original no encontrado, no es vídeo, error de ffmpeg…). Si falta el original, usa <b>Archivo → Relink</b>.</td></tr>
+  <tr><td>Al reproducir sale «No se encuentra el fichero…»</td><td>El clip sigue en la biblioteca pero su fichero ya no está en su sitio (disco desconectado, carpeta movida o borrada). Conecta el disco, usa <b>Archivo → Relink</b>, o quítalo con <b>Comprobar ficheros</b>.</td></tr>
+  <tr><td>La previsualización de transcode da un error de filtro</td><td>Casi siempre es un ajuste de imagen no válido, p. ej. un recorte con ancho o alto 0. Desde esta versión el recorte tiene un mínimo y los errores de ffmpeg se explican en castellano; el detalle sale en el mensaje.</td></tr>
   <tr><td>ISO, WB o lente salen vacíos</td><td>Esos datos solo aparecen si el fichero los incluye. Escríbelos a mano en la lista (doble clic).</td></tr>
   <tr><td>Un offload termina con fallos de verificación</td><td>Revisa <b>Trabajos</b> y repite la copia del fichero afectado: el fallo indica que la copia no coincide con el original.</td></tr>
 </table>
