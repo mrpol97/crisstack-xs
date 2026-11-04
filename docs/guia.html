@@ -32,7 +32,7 @@
 
 <div class="cover">
   <h1>CrisStack XS</h1>
-  <div class="sub">Guía rápida de uso · versión 0.6</div>
+  <div class="sub">Guía rápida de uso · versión 0.7</div>
   <span class="tag">Offload verificado</span><span class="tag">Biblioteca</span><span class="tag">Color</span><span class="tag">Informes</span><span class="tag">Transcodificación</span><span class="tag">Stills por escena</span>
 </div>
 
@@ -96,7 +96,7 @@
 <h3 class="pb">Organizar: carpetas y clips (reflejado en el disco)</h3>
 <p>La biblioteca no es solo una lista: puedes reorganizarla y que el cambio se haga también en el Finder (o el Explorador de Windows).</p>
 <ul>
-  <li><b>Carpetas:</b> clic derecho sobre una carpeta del árbol (o el botón <b>⋯</b> que aparece al pasar el ratón) → <b>Renombrar…</b>, <b>Nueva subcarpeta…</b>, <b>Mostrar en el Finder</b> o <b>Eliminar…</b>. Al renombrar con la casilla «Cambiar también el nombre de la carpeta en el Finder» marcada, la carpeta del disco cambia de nombre y todos los clips conservan su enlace. Abajo del árbol hay <b>+ Nueva carpeta</b>.</li>
+  <li><b>Carpetas:</b> clic derecho sobre una carpeta del árbol, el botón <b>⋯</b> que aparece al pasar el ratón sobre ella, o el botón <b>Carpeta…</b> de la barra de la biblioteca cuando tienes una carpeta abierta → <b>Renombrar…</b>, <b>Nueva subcarpeta…</b>, <b>Mostrar en el Finder</b> o <b>Eliminar…</b>. Al renombrar con la casilla «Cambiar también el nombre de la carpeta en el Finder» marcada, la carpeta del disco cambia de nombre y todos los clips conservan su enlace. Abajo del árbol hay <b>+ Nueva carpeta</b>.</li>
   <li><b>Mover clips:</b> arrástralos de la lista o las miniaturas a una carpeta del árbol, o clic derecho → <b>Mover a otra carpeta…</b>. Con la casilla marcada, los ficheros se mueven también en el disco. Solo se mueven dentro del mismo disco; para pasar a otro disco usa un Offload (copia verificada). Si ya hay un fichero con ese nombre, se avisa y no se pisa nada.</li>
   <li><b>Renombrar un clip:</b> clic derecho → <b>Renombrar fichero…</b> (si no escribes la extensión se conserva). También cambia el nombre en el disco.</li>
   <li><b>Quitar:</b> clic derecho → <b>Quitar…</b>. Por defecto solo sale de la biblioteca y los ficheros siguen en el disco; con la casilla marcada, el fichero va a la <b>Papelera</b> (se puede recuperar). Eliminar una carpeta funciona igual: la carpeta entera va a la Papelera solo si lo marcas.</li>
@@ -113,6 +113,13 @@
   <li>Si hay un <b>proxy</b> junto al original (carpeta <code>Sub</code> de Sony, un <code>_proxy</code>, etc.) se vincula solo. Si no, usa <b>Vincular proxy…</b> (inspector o clic derecho) y elige un H.264/ProRes del clip, sacado de la cámara o de DaVinci Resolve. El proxy se usa para <b>reproducir, sacar miniaturas y stills, y transcodificar</b>, y completa la duración y la resolución del clip.</li>
 </ul>
 <figure><img src="img/r1-raw-sin-decodificador.png" alt="RAW sin decodificador"><figcaption>Un .braw sin proxy: miniatura genérica, aviso claro y botón para vincular un proxy.</figcaption></figure>
+<h3>Decodificadores RAW nativos</h3>
+<p>Desde la v0.7 la app tiene una arquitectura de <b>decodificadores por fabricante</b> (Blackmagic, RED y Nikon, ARRI, Sony, Canon y Apple ProRes RAW). Cada uno es un programa aparte que usa el SDK oficial del fabricante y se instala en la carpeta de decodificadores (<b>Ajustes → Decodificadores RAW → Abrir la carpeta</b>). Esa pantalla muestra, formato por formato, si hay decodificador, por qué no, cómo se consigue el SDK y qué se sabe de su licencia. Los SDK exigen aceptar su licencia y no se incluyen: ver <code>docs/RAW-decodificadores.md</code>.</p>
+<ul>
+  <li>El formato se <b>detecta solo</b>; la ficha del clip dice con qué certeza (firma del fichero, heurística o extensión).</li>
+  <li>Con decodificador instalado el clip sale con su resolución, profundidad de bits, metadatos de cámara y sensor reales, y una miniatura decodificada. El <b>Visor RAW</b> del inspector decodifica fotograma a fotograma con ISO, Kelvin, espacio de color, gamma y calidad de debayer (solo los controles que ofrece ese SDK; si el SDK no aplica un ajuste, te lo avisa).</li>
+  <li>Sin decodificador, <b>no se convierte a otro formato en silencio</b>: el clip queda marcado, con su explicación. Si vinculas un proxy, se usa solo como proxy y la pantalla lo indica.</li>
+</ul>
 <h3 class="pb">Columnas de la lista</h3>
 <p>Pulsa <b>Columnas…</b> para elegir cuáles ver: flag (incluido <i>circled</i>), rating, preview, nombre, duración, frames, cámara, ISO, WB, shutter, shutter angle, sensor FPS, filtro ND, FPS del proyecto, modelo de lente, códec, tipo de fichero, resolución, fecha de registro, formato de TC, TC inicio y final, ShotID, reel/tape, fecha de grabación, fabricante, pistas y códec de audio, tamaño, información de look, Camera T, ISO nativo, espacio de color RAW, volúmenes, backups, escena, plano, toma y notas.</p>
 <ul>

@@ -19,6 +19,7 @@ const s3 = require('./engine/s3');
 const tools = require('./engine/tools');
 const filters = require('./engine/filters');
 const libops = require('./engine/libops');
+const rawdec = require('./engine/rawdec');
 const { LutLibrary } = require('./engine/lutlib');
 const crypto = require('node:crypto');
 
@@ -26,6 +27,7 @@ let appState; // ajustes globales: proyecto actual, looks, workflows, Slack, S3
 const projectFile = (name) => (name === 'Default' ? path.join(app.getPath('userData'), 'library.json') : path.join(app.getPath('userData'), 'projects', `${name.replace(/[^\w .-]/g, '_')}.json`));
 function openProject(name) {
   lib = new Library(new Store(projectFile(name)), path.join(app.getPath('userData'), 'thumbs'));
+  lib.raw = rawReg; // decodificadores RAW nativos (si hay)
   appState.set('project', name);
 }
 const encSecret = (s) => (safeStorage.isEncryptionAvailable() ? 'enc:' + safeStorage.encryptString(s).toString('base64') : 'raw:' + Buffer.from(s).toString('base64'));
@@ -44,7 +46,7 @@ async function uploadPaths(paths, prefix = '') {
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'cine', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, bypassCSP: true, corsEnabled: true } }]);
 
-let win, lib, settings, luts;
+let win, lib, settings, luts, rawReg;
 const running = new Map(); // jobId -> AbortController
 const send = (ch, payload) => win && !win.isDestroyed() && win.webContents.send(ch, payload);
 
@@ -252,7 +254,9 @@ function clipFile(c) {
   return (c.copies || []).map((x) => x.path).find((p) => p && fs.existsSync(p)) || null;
 }
 
-const NO_DEC = (c) => `«${c.name}» es ${c.meta?.codecLabel || 'un formato sin decodificador'}: la app no incluye el decodificador del fabricante (hace falta su SDK) y no puede reproducirlo ni transcodificarlo directamente. Vincula un proxy del clip (el que genera la cámara, o uno que saques con DaVinci Resolve o el software del fabricante) con «Vincular proxy…» y se usará para verlo, sacar miniaturas y transcodificar.`;
+const NO_DEC = (c) => c.meta?.rawNative
+  ? `«${c.name}» (${c.meta.codecLabel}) se lee con el decodificador RAW nativo, pero la reproducción y la transcodificación en tiempo real todavía no usan ese decodificador. Para verlo con sus ajustes de cámara (ISO, balance de blancos…) usa el «Visor RAW» del inspector, fotograma a fotograma. Si vinculas un proxy se podrá reproducir, pero un proxy NO es la decodificación RAW.`
+  : `«${c.name}» es ${c.meta?.codecLabel || 'un formato sin decodificador'}: la app no incluye el decodificador del fabricante (hace falta su SDK) y no puede reproducirlo ni transcodificarlo directamente.${c.meta?.rawReason ? ' Decodificador nativo: ' + c.meta.rawReason : ''} Vincula un proxy del clip (el que genera la cámara, o uno que saques con DaVinci Resolve o el software del fabricante) con «Vincular proxy…» y se usará para verlo, sacar miniaturas y transcodificar. Ojo: un proxy no es la decodificación RAW original.`;
 function mediaSource(c) {
   if (!c) return null;
   if (c.meta?.decodable === false) return c.proxy && fs.existsSync(c.proxy) ? c.proxy : null;
@@ -330,6 +334,7 @@ function registerIpc() {
   });
   h('shell:reveal', (p) => shell.showItemInFolder(p));
   h('shell:open', (p) => shell.openPath(p));
+  h('shell:openExternal', (u) => { if (!/^https:\/\//.test(String(u))) throw new Error('Solo se abren enlaces https'); return shell.openExternal(u); });
 }
 
 function registerIpc2() {
@@ -411,6 +416,26 @@ function registerIpc2() {
   h('luts:remove', (id) => luts.remove(id));
   h('luts:rename', (id, name) => luts.rename(id, name));
   h('library:checkMissing', () => Object.values(lib.clips).filter((c) => c.path && !clipFile(c)).map((c) => ({ id: c.id, name: c.name, path: c.path })));
+  // decodificadores RAW nativos: estado por fabricante, informacion del clip y visor fotograma a fotograma
+  const rawOpen = new Map(); // clipId -> { rc, timer }
+  const rawRelease = (id) => { const o = rawOpen.get(id); if (o) { clearTimeout(o.timer); o.rc.close(); rawOpen.delete(id); } };
+  const rawClip = async (id) => {
+    const c = lib.clips[id]; if (!c || c.kind !== 'video') throw new Error('Elige un clip de vídeo');
+    let o = rawOpen.get(id);
+    if (!o) { const rc = await rawReg.open(c.path, { format: c.meta?.rawFormat }); o = { rc }; rawOpen.set(id, o); }
+    clearTimeout(o.timer); o.timer = setTimeout(() => rawRelease(id), 30000); o.timer.unref?.();
+    return o.rc;
+  };
+  h('raw:status', async () => ({ dirs: rawReg.dirs, formats: await rawReg.status() }));
+  h('raw:openFolder', async () => { const d = rawReg.dirs[0]; await fsp.mkdir(d, { recursive: true }); return shell.openPath(d); });
+  h('raw:info', async (id) => (await rawClip(id)).info());
+  h('raw:frame', async (id, index, settings) => {
+    const rc = await rawClip(id); const info = rc.info();
+    const fr = await rc.frame(Math.max(0, Math.min((info.frames || 1) - 1, Math.round(Number(index) || 0))), settings || {});
+    const jpg = await rawdec.frameToJpeg(fr, { maxWidth: 960 });
+    return { img: 'data:image/jpeg;base64,' + jpg.toString('base64'), width: fr.width, height: fr.height, bitDepth: fr.bitDepth, layout: fr.layout, gpuUsed: fr.gpuUsed, applied: fr.settingsApplied, notApplied: fr.notApplied, unsupported: fr.unsupported, info };
+  });
+  h('raw:release', (id) => rawRelease(id));
   // proxy vinculado a un RAW sin decodificador
   h('clip:linkProxy', async (id, file) => {
     if (file === undefined) { const r = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: 'Vídeo proxy', extensions: ['mp4', 'mov', 'm4v', 'mxf', 'mkv'] }] }); if (r.canceled) return null; file = r.filePaths[0]; }
@@ -634,6 +659,7 @@ async function lookedThumb(c, base) {
 app.whenReady().then(() => {
   const ud = app.getPath('userData');
   appState = new Store(path.join(ud, 'app-settings.json'), { project: 'Default', looks: [], workflows: [], slack: '', s3: null });
+  rawReg = new rawdec.RawRegistry({ dirs: [path.join(ud, 'raw-helpers'), path.join(process.resourcesPath || '', 'raw')] });
   openProject(appState.get('project'));
   settings = lib.store;
   luts = new LutLibrary(path.join(ud, 'luts'), appState);
@@ -962,6 +988,22 @@ async function selftest(outDir) {
     await lib.importFolder(fo, {}, (c) => send('library:clip', c)); await wait(3500);
     await js(`state.lib.bin=null; state.lib.mode='list'; render()`); await wait(1200);
     const binOf = (n) => Object.values(lib.bins).find((b) => b.name === n && lib.bins[b.parent]?.name !== 'x');
+    // clic derecho REAL y boton ⋯ REAL sobre una carpeta del arbol (el menu debe verse y ser pulsable)
+    { const rowSel = '.tree .trow:nth-of-type(8)';
+      const rc = await js(`(()=>{const r=[...document.querySelectorAll('.tree .trow')].find((b)=>b.querySelector('.tname')?.textContent==='Dia1');const q=r.getBoundingClientRect();return [Math.round(q.left+60),Math.round(q.top+q.height/2),Math.round(q.right-14)]})()`);
+      await mouse('mouseMove', rc[0], rc[1], {}); await mouse('mouseDown', rc[0], rc[1], { button: 'right' }); await mouse('mouseUp', rc[0], rc[1], { button: 'right' }); await wait(500);
+      step('v06b clic derecho real', await js(`(()=>{const m=document.querySelector('.ctxmenu');if(!m)return null;const q=m.getBoundingClientRect();const at=document.elementFromPoint(q.left+q.width/2,q.top+12);return {rect:[q.left,q.top,q.width,q.height].map(Math.round),win:[innerWidth,innerHeight],pos:getComputedStyle(m).position,items:[...m.querySelectorAll('button')].map((b)=>b.textContent),visible:q.width>0&&q.height>0&&q.right<=innerWidth&&q.bottom<=innerHeight,pulsable:!!at&&m.contains(at)}})()`));
+      await shot('r2b-menu-clic-derecho-real');
+      await mouse('mouseDown', 20, 600); await mouse('mouseUp', 20, 600); await wait(300);
+      step('v06b menu se cierra al pulsar fuera', await js(`!document.querySelector('.ctxmenu')`));
+      const dots = await js(`(()=>{const r=[...document.querySelectorAll('.tree .trow')].find((b)=>b.querySelector('.tname')?.textContent==='Dia1');const d=r.querySelector('.rowmenu').getBoundingClientRect();return [Math.round(d.left+d.width/2),Math.round(d.top+d.height/2)]})()`);
+      await mouse('mouseMove', dots[0], dots[1], {}); await mouse('mouseDown', dots[0], dots[1]); await mouse('mouseUp', dots[0], dots[1]); await wait(600);
+      step('v06b boton ⋯ real', await js(`document.querySelector('dialog[open]')?.innerText.split(String.fromCharCode(10)).slice(0,3).join(' | ') || null`));
+      await shot('r2c-dialogo-carpeta');
+      await js(`document.querySelector('dialog[open]')?.querySelector('button:last-child')?.click(); [...document.querySelectorAll('dialog[open] button')].find((b)=>b.textContent==='Cerrar')?.click()`); await wait(300);
+      step('v06b boton Carpeta… de la barra', await js(`(()=>{state.lib.bin=state.lib.bins.find((b)=>b.name==='Dia1').id;render();return true})()`)); await wait(1200);
+      step('v06b barra', await js(`[...document.querySelectorAll('.center button')].map((b)=>b.textContent).filter((t)=>/Carpeta/.test(t))`));
+      await js(`state.lib.bin=null; render()`); await wait(1000); }
     await js(`(()=>{const r=[...document.querySelectorAll('.tree .trow')].find((b)=>b.querySelector('.tname')?.textContent==='Dia1'); r.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:200,clientY:300}));})()`); await wait(400);
     step('v06 menu de carpeta', await js(`[...document.querySelectorAll('.ctxmenu button')].map((b)=>b.textContent)`)); await shot('r2-menu-carpeta');
     await js(`[...document.querySelectorAll('.ctxmenu button')].find((b)=>b.textContent.startsWith('Renombrar')).click()`); await wait(600);
@@ -988,6 +1030,31 @@ async function selftest(outDir) {
     step('v06 clip renombrado', { nombre: rn6.name, enDisco: fs.existsSync(rn6.path) });
     await js(`state.lib.sel=new Set(); state.lib.mode='grid'; render()`); await wait(1200);
     await shot('r5-biblioteca-v06');
+    // ===================== v0.7: decodificadores RAW =====================
+    step('v07 RAW sin decodificador', { formato: rawA.meta?.rawFormat, deteccion: rawA.meta?.rawDetect, nativo: !!rawA.meta?.rawNative, estado: rawA.meta?.rawState });
+    await js(`state.lib.bin=null; state.lib.mode='grid'; render()`); await wait(1000);
+    await js(`(()=>{const c=state.lib.clips.find((x)=>x.name==='A001_C011.braw'); state.lib.sel=new Set([c.id]); drawClips($('#clipGrid')); drawInspector();})()`); await wait(700);
+    step('v07 filas de informacion RAW', await js(`[...document.querySelectorAll('#inspector table tr')].map((r)=>r.innerText.replace(/\\s+/g,' ')).filter((t)=>/RAW|Decodificador/.test(t))`));
+    await js(`go('settings')`); await wait(1500);
+    step('v07 ajustes: decodificadores RAW', await js(`[...document.querySelectorAll('.rawrow > summary')].map((s)=>s.innerText.replace(/\\s+/g,' '))`));
+    await js(`document.querySelectorAll('.rawrow')[0].open=true; document.querySelectorAll('.rawrow')[1].open=true; document.querySelector('.rawrow').scrollIntoView({block:'start'})`); await wait(500); await shot('s1-ajustes-raw');
+    // con un decodificador (de prueba) instalado
+    process.env.ELECTRON_RUN_AS_NODE = '1';
+    rawReg.overrides = { braw: { cmd: process.execPath, args: [path.join(__dirname, '..', '..', 'test', 'fixtures', 'fake-raw-helper.js')] } }; rawReg.hellos.clear();
+    const nat = path.join(outDir, 'RAW_NATIVO'); fs.mkdirSync(nat, { recursive: true }); fs.writeFileSync(path.join(nat, 'B001_C001.braw'), Buffer.alloc(4096, 4));
+    await lib.importFolder(nat, {}, (c) => send('library:clip', c)); await wait(3500);
+    const rn = Object.values(lib.clips).find((c) => c.name === 'B001_C001.braw');
+    step('v07 RAW con decodificador', { nativo: rn.meta.rawNative, res: [rn.meta.width, rn.meta.height], bits: rn.meta.bitDepth, camara: rn.meta.camera?.model, sensor: rn.meta.rawSensor?.bayer, thumb: !!rn.thumb && fs.existsSync(rn.thumb) });
+    step('v07 reproducir RAW nativo', (await js(`api.invoke('playback:source', ${JSON.stringify(rn.id)}).then(()=>'SIN ERROR', (e)=>e.message)`)).slice(0, 190));
+    await js(`go('library'); state.lib.bin=null; state.lib.mode='grid'; render()`); await wait(1500);
+    await js(`(()=>{const c=state.lib.clips.find((x)=>x.name==='B001_C001.braw'); state.lib.sel=new Set([c.id]); drawClips($('#clipGrid')); drawInspector();})()`); await wait(800);
+    await js(`document.querySelector('.rawviewer summary').click()`); await wait(2500);
+    const v1 = await js(`document.querySelector('.rawviewer img')?.src.length`);
+    step('v07 visor RAW', await js(`({ controles: [...document.querySelectorAll('.rawviewer label')].map((l)=>l.firstChild.textContent.trim()), img: !!document.querySelector('.rawviewer img'), mensaje: document.querySelector('.rawviewer .mut:last-child')?.previousSibling?.innerText || null })`));
+    await js(`(()=>{const i=[...document.querySelectorAll('.rawviewer label')].find((l)=>l.firstChild.textContent.trim()==='ISO').querySelector('input');i.value='6400';i.dispatchEvent(new Event('input',{bubbles:true}));const q=[...document.querySelectorAll('.rawviewer label')].find((l)=>l.firstChild.textContent.trim()==='Calidad de debayer').querySelector('select');q.value='half';q.dispatchEvent(new Event('change',{bubbles:true}));})()`); await wait(2200);
+    step('v07 visor: ajustes enviados', await js(`({ cambioLaImagen: document.querySelector('.rawviewer img').src.length !== ${v1}, avisos: [...document.querySelectorAll('.rawviewer .warn')].map((w)=>w.innerText) })`));
+    await js(`document.querySelector('.rawviewer').scrollIntoView({block:'start'})`); await wait(400); await shot('s2-visor-raw');
+    rawReg.overrides = {}; rawReg.hellos.clear(); delete process.env.ELECTRON_RUN_AS_NODE;
 
     await js(`go('library')`); await wait(900);
     step('mhl exists', !!mhl && fs.existsSync(mhl));

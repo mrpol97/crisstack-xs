@@ -247,3 +247,8 @@ label.f{min-width:0}
 .trow:hover .rowmenu,.trow:focus-visible .rowmenu,.trow.active .rowmenu{opacity:1}
 .rowmenu:hover{background:var(--line);color:var(--fg)}
 .tree button.trow.dropok{background:rgba(76,141,255,.22);box-shadow:inset 0 0 0 1.5px var(--acc);color:var(--fg)}
+
+/* ---- v0.7: decodificadores RAW ---- */
+.rawrow{border:1px solid var(--line);border-radius:8px;padding:8px 12px;background:var(--bg)}
+.rawrow>summary{cursor:pointer;display:flex;gap:6px;align-items:center}
+.rawrow .warn{color:var(--warn)}

@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const fsp = require('node:fs/promises');
 const media = require('./media');
+const rawdec = require('./rawdec');
 const { walk } = require('./offload');
 
 const uid = () => crypto.randomBytes(6).toString('hex');
@@ -184,6 +185,13 @@ class Library {
     clip.thumbRev = (clip.thumbRev || 0) + 1; // cambia la direccion de la miniatura para que la interfaz no use la antigua
     let src = clip.path;
     if (clip.meta?.decodable === false) {
+      // formato RAW: se identifica y, si hay decodificador nativo instalado, se lee con el SDK del fabricante (nunca se convierte en silencio)
+      const det = rawdec.detectFormat(clip.path);
+      if (det.id) {
+        clip.meta.rawFormat = det.id; clip.meta.rawDetect = { confidence: det.confidence, evidence: det.evidence };
+        clip.meta.codecLabel = rawdec.FORMATS[det.id].name; clip.meta.codec = clip.meta.codecLabel;
+        if (this.raw && await this.nativeRaw(clip, det, out)) return clip.thumb;
+      }
       if (!clip.proxy || !(await fsp.access(clip.proxy).then(() => true, () => false))) clip.proxy = (await media.findProxy(clip.path)) || undefined;
       if (!clip.proxy) { clip.thumb = await media.placeholderThumb(out, clip.meta.codecLabel || 'RAW', 'sin decodificador · vincula un proxy'); return clip.thumb; }
       src = clip.proxy;
@@ -192,6 +200,22 @@ class Library {
     try { clip.thumb = await media.thumbnail(src, out, Math.min(1, (clip.meta?.duration || 1) / 2)); }
     catch (e) { clip.thumb = await media.placeholderThumb(out, clip.meta?.codecLabel || 'Sin vista previa', 'no se pudo extraer un fotograma'); clip.meta = { ...(clip.meta || {}), thumbError: e.message }; }
     return clip.thumb;
+  }
+
+  /** Lectura nativa de un clip RAW con su decodificador: datos reales (resolucion, profundidad, camara, sensor) y miniatura decodificada. */
+  async nativeRaw(clip, det, out) {
+    let rc;
+    try { rc = await this.raw.open(clip.path, { format: det.id }); }
+    catch (e) { clip.meta.rawState = e.state || 'error'; clip.meta.rawReason = e.reason || e.message; return false; }
+    try {
+      const info = rc.info(); const m = clip.meta;
+      Object.assign(m, { rawNative: true, rawState: 'ready', rawReason: undefined, width: info.width, height: info.height, fps: info.fps, bitDepth: info.bitDepth, timecode: info.timecode || m.timecode,
+        duration: info.duration || (info.frames && info.fps ? info.frames / info.fps : m.duration), camera: { ...(m.camera || {}), ...(info.camera || {}) }, rawSensor: info.sensor, rawAsShot: info.asShot, rawSdk: info.sdk, rawGpu: info.gpu, rawFrames: info.frames });
+      const fr = await rc.frame(Math.floor((info.frames || 1) / 2), {});
+      await fsp.mkdir(path.dirname(out), { recursive: true }); await fsp.writeFile(out, await rawdec.frameToJpeg(fr, { maxWidth: 320 }));
+      clip.thumb = out; return true;
+    } catch (e) { clip.meta.rawState = 'error'; clip.meta.rawReason = e.message; return false; }
+    finally { rc.close(); }
   }
 
   /** Vincula (o quita, con file=null) un proxy a un clip y rehace su miniatura. */

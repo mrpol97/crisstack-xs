@@ -150,7 +150,7 @@ async function libraryScreen() {
   const row = (label, count, active, onclick, depth = 0, toggle = null, title = '', bin = null) => h('button', { class: 'trow' + (active ? ' active' : ''), style: `padding-left:${8 + depth * 14}px`, title, onclick, ...(bin ? binRowProps(bin) : {}) },
     toggle ? h('span', { class: 'tog', role: 'button', 'aria-label': toggle.open ? 'Contraer' : 'Expandir', onclick: (e) => { e.stopPropagation(); toggle.fn(); } }, toggle.open ? '▾' : '▸') : h('span', { class: 'tog' }),
     h('span', { class: 'ficon', 'aria-hidden': 'true' }, '▤'), h('span', { class: 'tname' }, label), h('span', { class: 'mut' }, count ?? ''),
-    bin ? h('span', { class: 'rowmenu', role: 'button', 'aria-label': `Acciones de la carpeta ${bin.name}`, title: 'Renombrar, nueva subcarpeta, eliminar…', onclick: (e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); binMenu(bin, r.left, r.bottom); } }, '⋯') : '');
+    bin ? h('span', { class: 'rowmenu', role: 'button', 'aria-label': `Acciones de la carpeta ${bin.name}`, title: 'Renombrar, nueva subcarpeta, eliminar…', onclick: (e) => { e.stopPropagation(); e.preventDefault(); try { folderDialog(bin); } catch (err) { console.error(err); toast('Error: ' + err.message); } } }, '⋯') : '');
   const branch = (b, depth) => {
     const ch = kids.get(b.id) || []; const open = !L.closed.has(b.id);
     return [row(b.name, b.count, L.bin === b.id, () => { L.bin = b.id; L.smart = null; render(); }, depth, ch.length ? { open, fn: () => { open ? L.closed.add(b.id) : L.closed.delete(b.id); render(); } } : null, b.name, b),
@@ -185,7 +185,7 @@ async function libraryScreen() {
       h('input', { type: 'text', placeholder: 'Buscar clip, escena, ShotID, notas…', value: L.search, style: 'flex:1;min-width:120px', oninput: (e) => { L.search = e.target.value; clearTimeout(L.t); L.t = setTimeout(refreshClips, 200); } }),
       h('span', { class: 'segs' }, modeBtn('list', 'Lista', 'Tabla con todas las columnas'), modeBtn('grid', 'Miniaturas', 'Miniaturas de los clips'), modeBtn('folders', 'Carpetas', 'Resumen por carpeta: clips, tamaño y tipos'), modeBtn('compare', 'Comparar', 'Dos clips seleccionados, en cuadrícula o con cortina'))),
     h('div', { class: 'row', style: 'margin-bottom:8px;justify-content:space-between' }, crumbEl,
-      h('span', { class: 'row' }, L.mode === 'list' ? h('button', { class: 'btn', onclick: columnsDialog }, 'Columnas…') : '',
+      h('span', { class: 'row' }, L.bin && bins.find((b) => b.id === L.bin) ? h('button', { class: 'btn', title: 'Renombrar, crear subcarpeta, mostrar en el Finder o eliminar la carpeta abierta', onclick: () => folderDialog(bins.find((b) => b.id === L.bin)) }, 'Carpeta…') : '', L.mode === 'list' ? h('button', { class: 'btn', onclick: columnsDialog }, 'Columnas…') : '',
         L.mode === 'list' || L.mode === 'grid' ? h('label', { class: 'chip', title: 'Muestra las miniaturas con la LUT, el color y la transformación de cada clip' }, h('input', { type: 'checkbox', checked: L.thumbLook !== false, onchange: (e) => { L.thumbLook = e.target.checked; try { localStorage.setItem('cine.thumbLook', e.target.checked ? '1' : '0'); } catch { /* */ } drawClips($('#clipGrid')); } }), 'Miniaturas con look') : '',
         h('button', { class: 'btn', title: 'Aplica una LUT a la selección, a una carpeta o a todo; después puedes ajustar un poco el color de cada clip', onclick: lutDialog }, 'LUT…'),
         h('button', { class: 'btn', title: 'Busca clips cuyo fichero ya no está (disco desconectado, movido o borrado) y deja quitarlos de la biblioteca', onclick: missingDialog }, 'Comprobar ficheros'),
@@ -298,7 +298,7 @@ function drawFolders(grid) {
   const L = state.lib; const bins = L.bins;
   const children = bins.filter((b) => (b.parent || null) === (L.bin || null));
   const cur = L.bin ? bins.find((b) => b.id === L.bin) : null;
-  const card = (b) => { const s = b.stats; return h('button', { class: 'fcard', onclick: () => { L.bin = b.id; L.smart = null; L.open.add(b.id); render(); } },
+  const card = (b) => { const s = b.stats; return h('button', { class: 'fcard', oncontextmenu: (e) => { e.preventDefault(); binMenu(b, e.clientX, e.clientY); }, onclick: () => { L.bin = b.id; L.smart = null; L.open.add(b.id); render(); } },
     h('div', { class: 'fname' }, h('span', { class: 'ficon', 'aria-hidden': 'true' }, '▤'), b.name),
     h('div', { class: 'fbig' }, `${s.clips} ${s.clips === 1 ? 'clip' : 'clips'}`, h('span', { class: 'mut' }, ' · ' + fmtBytes(s.size))),
     h('div', { class: 'ftypes' }, h('span', {}, `${s.video} vídeo`), h('span', {}, `${s.audio} audio`), h('span', {}, `${s.still} imágenes`), s.duration ? h('span', {}, hms(s.duration)) : '')); };

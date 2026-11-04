@@ -28,19 +28,18 @@ const binPath = (b) => { const bins = state.lib.bins; const n = []; for (let x =
 const afterChange = () => { state.lib.sel.clear(); state.playerClipId = null; return render(); };
 
 /* ---------- menu contextual ---------- */
-let ctxEl = null;
-function closeCtx() { ctxEl?.remove(); ctxEl = null; }
+let ctxEl = null, ctxAt = 0;
+function closeCtx(force = true) { if (!force && performance.now() - ctxAt < 400) return; ctxEl?.remove(); ctxEl = null; }
 function ctxMenu(items, x, y) {
-  closeCtx();
+  closeCtx(); ctxAt = performance.now();
   ctxEl = h('div', { class: 'ctxmenu', role: 'menu' }, ...items.map((it) => (it.sep ? h('div', { class: 'ctxsep' }) : h('button', { role: 'menuitem', class: it.danger ? 'danger' : '', disabled: !!it.disabled, onclick: () => { closeCtx(); it.onclick(); } }, it.label))));
   document.body.append(ctxEl);
   const r = ctxEl.getBoundingClientRect();
   ctxEl.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8)) + 'px'; ctxEl.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8)) + 'px';
   ctxEl.querySelector('button:not([disabled])')?.focus();
 }
-document.addEventListener('mousedown', (e) => { if (ctxEl && !ctxEl.contains(e.target)) closeCtx(); }, true);
+document.addEventListener('mousedown', (e) => { if (ctxEl && !ctxEl.contains(e.target)) closeCtx(false); }, true);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ctxEl) { closeCtx(); e.stopPropagation(); } }, true);
-window.addEventListener('blur', closeCtx); window.addEventListener('resize', closeCtx);
 
 /* ---------- carpetas ---------- */
 async function renameBinUI(bin) {
@@ -69,16 +68,27 @@ async function deleteBinUI(bin) {
   onOk: async () => { const r = await api.invoke('bin:remove', bin.id, chk.input.checked); if (state.lib.bin === bin.id) state.lib.bin = null; toast(r.trashed ? `Eliminada. La carpeta está en la Papelera: ${r.trashed}` : `Eliminada de la biblioteca (${plural(r.clips, 'clip', 'clips')})`); } });
   if (ok) afterChange();
 }
+/** Las mismas acciones del menu, en una ventana: se usa desde el boton ⋯ y desde el boton «Carpeta…» (no depende del clic derecho). */
+function folderDialog(bin) {
+  const dlg = h('dialog', { class: 'pform', style: 'min-width:340px' }); const close = () => { dlg.close(); dlg.remove(); };
+  const act = (label, fn, cls = '') => h('button', { type: 'button', class: 'btn ' + cls, style: 'justify-content:flex-start', onclick: () => { close(); fn(); } }, label);
+  dlg.append(h('div', { class: 'col', style: 'gap:8px' }, h('b', { style: 'font-size:15px' }, `Carpeta «${bin.name}»`), h('div', { class: 'mut' }, plural(bin.count, 'clip', 'clips')),
+    act('Renombrar…', () => renameBinUI(bin)), act('Nueva subcarpeta…', () => newBinUI(bin)),
+    act(`Mostrar en ${FM}`, async () => { const i = await api.invoke('bin:info', bin.id); if (i.dir) api.invoke('shell:reveal', i.dir); else toast('Esta carpeta no corresponde a una carpeta del disco'); }),
+    act('Eliminar…', () => deleteBinUI(bin), 'danger'),
+    h('div', { class: 'row', style: 'justify-content:flex-end' }, h('button', { type: 'button', class: 'btn', onclick: close }, 'Cerrar'))));
+  dlg.addEventListener('cancel', () => dlg.remove()); document.body.append(dlg); dlg.showModal();
+}
 function binMenu(bin, x, y) {
   ctxMenu([
     { label: 'Renombrar…', onclick: () => renameBinUI(bin) }, { label: 'Nueva subcarpeta…', onclick: () => newBinUI(bin) },
     { label: `Mostrar en ${FM}`, onclick: async () => { const i = await api.invoke('bin:info', bin.id); if (i.dir) api.invoke('shell:reveal', i.dir); else toast('Esta carpeta no corresponde a una carpeta del disco'); } },
-    { sep: true }, { label: 'Eliminar…', danger: true, onclick: () => deleteBinUI(bin) }]);
+    { sep: true }, { label: 'Eliminar…', danger: true, onclick: () => deleteBinUI(bin) }], x, y);
 }
 /** Propiedades de una fila de carpeta del arbol: menu contextual y zona donde soltar clips. */
 function binRowProps(bin) {
   return {
-    oncontextmenu: (e) => { e.preventDefault(); binMenu(bin, e.clientX, e.clientY); },
+    oncontextmenu: (e) => { e.preventDefault(); try { binMenu(bin, e.clientX, e.clientY); } catch (err) { console.error(err); toast('No se pudo abrir el menú: ' + err.message + '. Usa el botón «Carpeta…» de la barra.'); } },
     ondragover: (e) => { if (state.lib.dragIds) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; e.currentTarget.classList.add('dropok'); } },
     ondragleave: (e) => e.currentTarget.classList.remove('dropok'),
     ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('dropok'); const ids = state.lib.dragIds; state.lib.dragIds = null; if (ids?.length) moveClipsUI(ids, bin); },

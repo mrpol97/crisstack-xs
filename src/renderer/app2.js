@@ -122,6 +122,7 @@ views.settings = async function viewSettings() {
       h('button', { class: 'btn', onclick: () => lutManager() }, 'Gestionar LUTs…'), h('button', { class: 'btn', onclick: async () => { const r = await api.invoke('luts:importFolder'); if (r) { await loadLuts(); importSummary(r); } } }, 'Importar carpeta de LUTs…')),
     h('h2', {}, 'Workflows guardados'), h('div', { class: 'card' }, wfs.length ? h('div', { class: 'list' }, ...wfs.map((w) => h('div', { class: 'item' }, h('span', {}, w.name), h('button', { class: 'x', 'aria-label': 'Borrar', onclick: async () => { await api.invoke('workflows:remove', w.name); render(); } }, '×')))) : h('span', { class: 'mut' }, 'Guarda uno desde la pestaña Offload.')),
     h('h2', {}, 'Atajos de teclado'), shortcutsEditor());
+  main.append(await rawSection());
 };
 
 /* ---------- atajos de teclado configurables ---------- */

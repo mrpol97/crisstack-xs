@@ -46,6 +46,15 @@ La primera vez, macOS pedirá abrirla con clic derecho → Abrir (no está firma
 - **Transcodificar**: ProRes Proxy/422/HQ, DNxHR LB/SQ, H.264, H.265; escalado, LUT `.cube`,
   timecode y nombre quemados; puede lanzarse automáticamente tras el offload.
 
+## Novedades v0.7
+
+- **Arquitectura de decodificadores RAW nativos** (un decodificador por fabricante, detección automática del formato, estado honesto en
+  Ajustes → Decodificadores RAW, protocolo de «helpers», Visor RAW con ISO / balance de blancos / espacio de color / gamma / calidad de
+  debayer según lo que ofrezca cada SDK, sin conversión silenciosa a otros formatos). Los decodificadores reales de Blackmagic, RED, Nikon,
+  ARRI, Sony, Canon y Apple requieren aceptar la licencia de cada SDK y compilarlos: ver [docs/RAW-decodificadores.md](docs/RAW-decodificadores.md)
+  (estado, estudio de licencias y evaluación de MDK y FFmpeg).
+- Arreglo: el **menú de clic derecho y el botón ⋯ de las carpetas** no se veían (el menú se abría fuera de la pantalla). Ahora también hay un botón «Carpeta…» en la barra.
+
 ## Novedades v0.6
 
 - **Carpetas y clips con reflejo en el disco**: renombrar carpetas (cambia también la carpeta del Finder/Explorador y las rutas de los clips),
