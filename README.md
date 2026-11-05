@@ -46,6 +46,10 @@ La primera vez, macOS pedirá abrirla con clic derecho → Abrir (no está firma
 - **Transcodificar**: ProRes Proxy/422/HQ, DNxHR LB/SQ, H.264, H.265; escalado, LUT `.cube`,
   timecode y nombre quemados; puede lanzarse automáticamente tras el offload.
 
+## Novedades v0.8.1
+
+- «Comparar y copiar lo nuevo»: al reemplazar un fichero distinto, la versión anterior de B se guarda en `_CrisStack_versiones/<fecha>/` en vez de perderse (esa carpeta no cuenta al comparar ni al copiar).
+
 ## Novedades v0.8
 
 - **Offload con varios orígenes y varios destinos:** cada origen elige a qué destinos va (varios orígenes en un destino, o dos destinos con reparto distinto). Nuevo tipo de origen «Carpeta tal cual» (ni cámara ni sonido: se copia la carpeta con su nombre, sin plantilla ni biblioteca).

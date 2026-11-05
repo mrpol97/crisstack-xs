@@ -82,6 +82,21 @@ test('sincronizar: copiar lo nuevo con verificación y volver a comparar deja to
   assert.equal(after.onlyA.length, 0); assert.equal(after.differ.length, 0); assert.equal(after.same.length, 3);
 });
 
+test('reemplazar guarda la version anterior y no la pierde; sin permiso no pisa nada', async () => {
+  const { archiveExisting } = require('../src/main/engine/sync');
+  const b = path.join(tmp, 'f7', 'B'); await mk(b, { 'a.txt': 'vieja', 'dir/b.txt': 'vieja b' });
+  const sin = await archiveExisting(b, ['a.txt', 'nuevo.txt'], { replace: false });
+  assert.deepEqual(sin.list, ['nuevo.txt']); assert.equal(sin.kept, 0); assert.equal(await fsp.readFile(path.join(b, 'a.txt'), 'utf8'), 'vieja');
+  const con = await archiveExisting(b, ['a.txt', 'dir/b.txt'], { replace: true, stamp: 'T1' });
+  assert.deepEqual(con.list, ['a.txt', 'dir/b.txt']); assert.equal(con.kept, 2);
+  assert.equal(await fsp.readFile(path.join(b, '_CrisStack_versiones', 'T1', 'dir', 'b.txt'), 'utf8'), 'vieja b');
+  assert.equal(fs.existsSync(path.join(b, 'a.txt')), false, 'queda libre para copiar la version nueva');
+  const cmp = await compareFolders(b, path.join(tmp, 'f7', 'vacia')).catch(() => null);
+  const r = await compareFolders(b, (await fsp.mkdir(path.join(tmp, 'f7', 'C'), { recursive: true }), path.join(tmp, 'f7', 'C')));
+  assert.ok(!r.onlyA.some((f) => f.rel.includes('_CrisStack_versiones')), 'la carpeta de versiones no cuenta como contenido');
+  assert.equal(cmp, null);
+});
+
 test('velocidad: estadísticas, gráfica SVG e informe', () => {
   // muestras acumuladas [t, total, fase, d1, d2]: 100 MB/s en copia, 50 MB/s en verificación
   const MB = 1024 * 1024; const samples = [];

@@ -9,7 +9,7 @@ const { createHasher } = require('./hasher');
 
 const CHUNK = 4 * 1024 * 1024;
 const DEPTH = 4; // bloques en vuelo por destino (4 x 4 MB)
-const DEFAULT_IGNORE = [/^\.DS_Store$/, /^Thumbs\.db$/i, /^\.Spotlight-V100$/, /^\.Trashes$/, /^\.fseventsd$/];
+const DEFAULT_IGNORE = [/^_CrisStack_versiones$/, /^\.DS_Store$/, /^Thumbs\.db$/i, /^\.Spotlight-V100$/, /^\.Trashes$/, /^\.fseventsd$/];
 
 async function walk(root, ignore = DEFAULT_IGNORE) {
   const files = [];

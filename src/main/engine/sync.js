@@ -47,4 +47,26 @@ async function compareFolders(a, b, opts = {}) {
   return out;
 }
 
-module.exports = { compareFolders };
+/**
+ * Antes de reemplazar ficheros en B, guarda la version anterior en B/_CrisStack_versiones/<fecha>/<ruta> (nunca se pierde).
+ * Devuelve { list: rutas que se pueden copiar, kept: cuantas versiones se guardaron, dir }.
+ */
+async function archiveExisting(b, rels, { replace = false, stamp = new Date().toISOString().replace(/[:.]/g, '-') } = {}) {
+  const dir = path.join(b, '_CrisStack_versiones', stamp);
+  const list = []; let kept = 0;
+  for (const rel of rels) {
+    const dst = path.join(b, rel);
+    const exists = await fsp.stat(dst).then(() => true, () => false);
+    if (exists) {
+      if (!replace) continue; // sin permiso para reemplazar nunca se pisa nada
+      const old = path.join(dir, rel);
+      await fsp.mkdir(path.dirname(old), { recursive: true });
+      await fsp.rename(dst, old);
+      kept++;
+    }
+    list.push(rel);
+  }
+  return { list, kept, dir: kept ? dir : null };
+}
+
+module.exports = { compareFolders, archiveExisting };

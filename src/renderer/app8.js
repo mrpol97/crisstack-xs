@@ -33,13 +33,13 @@ function syncPanel() {
     const rels = [...S.pick, ...(S.replace ? S.pickDiff : [])];
     if (!rels.length) return;
     if (S.replace && S.pickDiff.size) {
-      const ok = await modal({ title: 'Reemplazar ficheros distintos', danger: true, ok: 'Reemplazar y copiar', body: [h('div', {}, `Se van a SOBRESCRIBIR ${S.pickDiff.size} ${S.pickDiff.size === 1 ? 'fichero' : 'ficheros'} de la carpeta B con la versión de A. Las versiones actuales de B se pierden.`), h('div', { class: 'mono mut' }, S.b)] });
+      const ok = await modal({ title: 'Reemplazar ficheros distintos', danger: true, ok: 'Reemplazar y copiar', body: [h('div', {}, `Se van a reemplazar ${S.pickDiff.size} ${S.pickDiff.size === 1 ? 'fichero' : 'ficheros'} de la carpeta B con la versión de A.`), h('div', { class: 'mut' }, 'La versión actual de cada uno no se borra: se guarda antes en la carpeta «_CrisStack_versiones» dentro de B.'), h('div', { class: 'mono mut' }, S.b)] });
       if (!ok) return;
     }
     S.busy = 'copy'; S.msg = ''; S.prog = null; S.t0 = Date.now(); S.draw();
     try {
       const r = await api.invoke('sync:copy', S.a, S.b, rels, { replace: S.replace, algos: state.offload.algos });
-      S.msg = r.ok ? `Copiados y verificados ${r.files} ${r.files === 1 ? 'fichero' : 'ficheros'} (${fmtBytes(r.bytes)}) en ${fmtClock(r.seconds)}.` : `Terminó con ${r.failures} fallos de copia o verificación: revisa los destinos.`;
+      S.msg = r.ok ? `Copiados y verificados ${r.files} ${r.files === 1 ? 'fichero' : 'ficheros'} (${fmtBytes(r.bytes)}) en ${fmtClock(r.seconds)}.${r.kept ? ` Las ${r.kept} versiones anteriores de B se guardaron en ${r.versionsDir}.` : ''}` : `Terminó con ${r.failures} fallos de copia o verificación: revisa los destinos.`;
       S.ok = r.ok; toast(S.msg);
     } catch (e) { S.msg = /Cancelado/.test(errText(e)) ? 'Copia cancelada: los ficheros a medias se han borrado.' : 'Error: ' + errText(e); S.ok = false; }
     S.busy = ''; S.prog = null;
@@ -67,7 +67,7 @@ function syncPanel() {
     nodes.push(h('div', { class: 'card col', style: 'margin-top:10px' },
       h('div', { class: 'chips' },
         h('label', { class: 'chip', title: 'Lee los dos ficheros y compara su checksum cuando tienen el mismo tamaño. Es lo único que garantiza que el contenido es igual.' }, h('input', { type: 'checkbox', checked: S.hash, disabled: busy, onchange: (e) => { S.hash = e.target.checked; S.res = null; S.draw(); } }), 'Comparar por checksum (más lento, más seguro)'),
-        h('label', { class: 'chip', title: 'Si un fichero existe en las dos carpetas pero es distinto, se sobrescribe en B. Pide confirmación.' }, h('input', { type: 'checkbox', checked: S.replace, disabled: busy, onchange: (e) => { S.replace = e.target.checked; S.draw(); } }), 'Reemplazar también los distintos')),
+        h('label', { class: 'chip', title: 'Si un fichero existe en las dos carpetas pero es distinto, se reemplaza en B (la versión anterior se guarda en _CrisStack_versiones). Pide confirmación.' }, h('input', { type: 'checkbox', checked: S.replace, disabled: busy, onchange: (e) => { S.replace = e.target.checked; S.draw(); } }), 'Reemplazar también los distintos')),
       h('div', { class: 'mut' }, 'Sin checksum se comparan nombre, tamaño y fecha: es rápido, pero un fichero con el mismo tamaño y fecha distinta sale como «fecha distinta» y no se copia. Lo que se copia siempre se verifica con checksum.'),
       same ? h('div', { class: 'bad' }, 'Las carpetas son la misma o una está dentro de la otra: elige dos carpetas distintas.') : '',
       h('div', { class: 'row' }, h('button', { class: 'btn primary', disabled: busy || !S.a || !S.b || same, onclick: () => compare() }, S.busy === 'compare' ? 'Comparando…' : 'Comparar'),

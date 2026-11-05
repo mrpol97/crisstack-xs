@@ -5,7 +5,7 @@ const fsp = require('node:fs/promises');
 const { pathToFileURL } = require('node:url');
 
 const { runOffload, verifyFolder } = require('./engine/offload');
-const { compareFolders } = require('./engine/sync');
+const { compareFolders, archiveExisting } = require('./engine/sync');
 const speed = require('./engine/speed');
 const { writeMhl, parseMhl } = require('./engine/mhl');
 const { expand } = require('./engine/wildcards');
@@ -272,18 +272,14 @@ async function runWorkflow(cfg) {
 
 /** Comparar y copiar lo nuevo entre dos carpetas (con checksum). */
 async function syncCopy(a, b, rels, { algos, replace } = {}) {
-  const list = [];
-  for (const rel of rels || []) {
-    if (!replace && fs.existsSync(path.join(b, rel))) continue; // sin permiso para reemplazar nunca se pisa nada
-    list.push(rel);
-  }
+  const { list, kept, dir: versionsDir } = await archiveExisting(b, rels || [], { replace }); // lo que se reemplaza se guarda antes en _CrisStack_versiones
   workBegin();
   const ac = new AbortController(); running.set('sync-copy', ac);
   try {
     const job = await runOffload({ sources: [a], destinations: [b], flat: true, include: new Set(list), algos: algos?.length ? algos : ['xxh64'], verify: true, signal: ac.signal, onProgress: (p) => send('sync:progress', { kind: 'copy', ...p }) });
     job.reel = path.basename(b.replace(/[\\/]+$/, '')) || b; job.volume = job.reel; job.sourceType = 'sync'; job.project = lib.getProject()?.name || '';
     lib.addJob(job);
-    return { ok: job.ok, failures: job.failures, files: job.fileCount, bytes: job.totalBytes, seconds: job.seconds, id: job.id, skipped: (rels || []).length - list.length };
+    return { ok: job.ok, failures: job.failures, files: job.fileCount, bytes: job.totalBytes, seconds: job.seconds, id: job.id, skipped: (rels || []).length - list.length, kept, versionsDir };
   } finally { running.delete('sync-copy'); workEnd('Copia entre carpetas terminada'); }
 }
 async function syncCompare(a, b, o = {}) {
