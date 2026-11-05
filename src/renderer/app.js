@@ -26,7 +26,7 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.ad
 
 const state = {
   view: 'library',
-  offload: { sources: [], destinations: [], template: '{project}/Dia_{day}/{camera}_{reel}', project: 'Proyecto', camera: 'A', day: 1, algos: ['xxh64'], verify: true, mhl: true, report: '', transcode: '', ascmhl: false, s3: false, rename: '', script: '', running: false },
+  offload: { mode: 'offload', sources: [], destinations: [], template: '{project}/Dia_{day}/{camera}_{reel}', project: 'Proyecto', camera: 'A', day: 1, algos: ['xxh64'], verify: true, mhl: true, report: '', transcode: '', ascmhl: false, s3: false, rename: '', script: '', running: false },
   progress: {}, // key -> {pct, label, done, ok}
   lib: { bin: null, smart: null, search: '', sel: new Set(), last: null, clips: [], bins: [], smarts: [], fields: [] },
   transcode: { preset: 'prores_proxy', height: '', lut: '', burnTimecode: false, burnName: false, dir: '', applyLooks: true, s3: false },
@@ -124,7 +124,7 @@ async function viewJobs() {
     tb.append(h('tr', {}, h('td', {}, new Date(j.started).toLocaleString('es-ES')), h('td', {}, j.reel || ''), h('td', { title: j.sources.join('\n') }, (j.sources[0] || '').split(/[\\/]/).pop()),
       h('td', {}, String(j.fileCount)), h('td', {}, fmtBytes(j.totalBytes)), h('td', { class: 'mono' }, j.algos.join(',').toUpperCase()),
       h('td', { class: j.ok ? 'ok' : 'bad' }, j.ok ? 'Verificado' : `${j.failures} fallos`),
-      h('td', {}, h('button', { class: 'btn', onclick: async () => { const f = await api.invoke('report:make', 'volume', { jobIds: [j.id], format: 'pdf' }); toast('Informe: ' + f); api.invoke('shell:reveal', f); } }, 'Informe'))));
+      h('td', { class: 'row' }, h('button', { class: 'btn', onclick: async () => { const f = await api.invoke('report:make', 'volume', { jobIds: [j.id], format: 'pdf' }); toast('Informe: ' + f); api.invoke('shell:reveal', f); } }, 'Informe'), h('button', { class: 'btn', title: 'Gráfica de velocidad y estadísticas por destino', onclick: () => showSpeed(j.id, j.reel) }, 'Velocidad'))));
   }
   t.append(tb); main.append(h('div', { class: 'card', style: 'padding:0;overflow:auto' }, t));
 }

@@ -26,8 +26,10 @@ test('offload: ficheros sueltos y datos de progreso (fichero, paso y destino) si
   assert.ok(job.ok); assert.equal(job.fileCount, 2);
   for (const d of ['d1', 'd2']) assert.ok(fs.existsSync(path.join(tmp, d, 'Mi Peli', 'Dia_01', 'Camara_A', 'Sueltos', 'a.bin')));
   const mid = ev.filter((e) => e.doneBytes > 0 && e.phase !== 'done');
-  assert.ok(mid.length > 5 && mid.every((e) => e.phase && e.current && e.fileIndex), 'cada evento sabe en qué fase y fichero está');
-  assert.ok(ev.some((e) => e.phase === 'verify' && e.dest === 1) && ev.some((e) => e.phase === 'verify' && e.dest === 2), 'se informa de qué destino se verifica');
+  assert.ok(mid.length >= 2 && mid.every((e) => e.phase && e.current && e.fileIndex), 'cada evento sabe en qué fase y fichero está');
+  const last = ev.at(-1);
+  assert.ok(ev.some((e) => e.phase === 'verify'), 'se informa de la fase de verificación (todos los destinos a la vez)');
+  assert.ok(last.perDest.length === 2 && last.perDest.every((d) => d.copied === 400000 && d.verified === 400000), 'los dos destinos informan de lo escrito y de lo verificado');
   assert.equal(ev.find((e) => e.phase === 'copy').destCount, 2); assert.equal(ev.at(-1).phase, 'done');
   assert.ok(ev.every((e, i) => i === 0 || e.doneBytes >= ev[i - 1].doneBytes), 'el progreso nunca retrocede');
 });

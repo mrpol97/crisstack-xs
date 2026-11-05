@@ -252,3 +252,12 @@ label.f{min-width:0}
 .rawrow{border:1px solid var(--line);border-radius:8px;padding:8px 12px;background:var(--bg)}
 .rawrow>summary{cursor:pointer;display:flex;gap:6px;align-items:center}
 .rawrow .warn{color:var(--warn)}
+
+/* ---- v0.8: destinos por origen, comparar carpetas, velocidad ---- */
+.srcdests{align-items:center;margin-top:4px}
+.destspeeds{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.syncrow{display:flex;gap:8px;align-items:center;padding:2px 4px;border-radius:4px}
+.syncrow:hover{background:rgba(255,255,255,.05)}
+.synclist{max-height:260px;overflow:auto;border:1px solid var(--line,#2a3140);border-radius:6px;padding:4px}
+.speedchart{min-width:560px;overflow:auto}
+.speedchart svg{display:block}

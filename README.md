@@ -46,6 +46,14 @@ La primera vez, macOS pedirá abrirla con clic derecho → Abrir (no está firma
 - **Transcodificar**: ProRes Proxy/422/HQ, DNxHR LB/SQ, H.264, H.265; escalado, LUT `.cube`,
   timecode y nombre quemados; puede lanzarse automáticamente tras el offload.
 
+## Novedades v0.8
+
+- **Offload con varios orígenes y varios destinos:** cada origen elige a qué destinos va (varios orígenes en un destino, o dos destinos con reparto distinto). Nuevo tipo de origen «Carpeta tal cual» (ni cámara ni sonido: se copia la carpeta con su nombre, sin plantilla ni biblioteca).
+- **Copia y verificación en paralelo:** se lee una vez y se escribe en todos los destinos a la vez, cada uno con su propia cola; los destinos se releen a la vez. Un destino que falla no detiene a los demás y no deja copias a medias. Los trabajos con destinos distintos corren a la vez.
+- **Segundo plano:** el equipo no se duerme mientras se copia, la interfaz no se frena con la ventana tapada, **cerrar la ventana no detiene la copia** (notificación al terminar) y **salir de la app pregunta** «¿Seguro que quieres finalizar el traspaso?».
+- **Comparar y copiar lo nuevo:** compara dos carpetas (rápido o por checksum), muestra nuevos / distintos / solo en destino / iguales y copia lo marcado con verificación; reanuda traspasos interrumpidos.
+- **Velocidad del traspaso:** gráfica en el tiempo con una línea por destino, estadísticas (media, máxima, mínima) y tabla por destino, en Trabajos y como informe PDF/HTML («Velocidad del traspaso»).
+
 ## Novedades v0.7
 
 - **Arquitectura de decodificadores RAW nativos** (un decodificador por fabricante, detección automática del formato, estado honesto en

@@ -1,10 +1,12 @@
-const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, safeStorage, powerSaveBlocker, Notification } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const { pathToFileURL } = require('node:url');
 
 const { runOffload, verifyFolder } = require('./engine/offload');
+const { compareFolders } = require('./engine/sync');
+const speed = require('./engine/speed');
 const { writeMhl, parseMhl } = require('./engine/mhl');
 const { expand } = require('./engine/wildcards');
 const { Store } = require('./engine/store');
@@ -54,9 +56,16 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1400, height: 880, minWidth: 1100, minHeight: 700, backgroundColor: '#0f1115',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    webPreferences: { preload: path.join(__dirname, '..', 'preload.js'), contextIsolation: true, nodeIntegration: false },
+    webPreferences: { preload: path.join(__dirname, '..', 'preload.js'), contextIsolation: true, nodeIntegration: false, backgroundThrottling: false }, // la interfaz no se frena aunque la ventana este oculta o tapada
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  // Cerrar la ventana NO detiene un traspaso: la copia sigue en segundo plano. Salir de la app (Cmd+Q) si pregunta, ver before-quit.
+  win.on('close', (e) => {
+    if (forceQuit || !isBusy() || process.env.CINESTACK_SELFTEST) return;
+    e.preventDefault();
+    if (process.platform === 'darwin') win.hide(); else win.minimize();
+    if (!bgNoticeShown) { bgNoticeShown = true; notify('El traspaso sigue en segundo plano. Te aviso al terminar; para verlo, abre la app desde el Dock.'); }
+  });
 }
 
 function listVolumes() {
@@ -84,6 +93,7 @@ async function renderPdf(html, outFile) {
 const DEFAULT_REPORTS = [
   { id: 'volume', name: 'Volumen / checksums', type: 'volume', format: 'pdf', dark: false, title: '', scope: 'job', columns: [] },
   { id: 'shooting_day', name: 'Día de rodaje', type: 'shooting_day', format: 'pdf', dark: false, title: '', scope: 'job', columns: [] },
+  { id: 'transfer', name: 'Velocidad del traspaso', type: 'transfer', format: 'pdf', dark: false, title: '', scope: 'job', columns: [] },
   { id: 'clips', name: 'Lista de clips', type: 'clips', format: 'pdf', dark: false, title: '', scope: 'job', columns: [] },
   { id: 'thumbnails', name: 'Miniaturas', type: 'thumbnails', format: 'pdf', dark: false, title: '', scope: 'job', columns: [] },
   { id: 'contact_print', name: 'Contact print', type: 'contact_print', format: 'pdf', dark: false, title: '', scope: 'job', columns: [] },
@@ -91,6 +101,7 @@ const DEFAULT_REPORTS = [
 function reportPresets() {
   let l = appState.get('reportPresets');
   if (!Array.isArray(l) || !l.length) { l = DEFAULT_REPORTS.map((r) => ({ ...r })); appState.set('reportPresets', l); }
+  else if (!l.some((p) => p.type === 'transfer')) { l = [...l, { ...DEFAULT_REPORTS.find((r) => r.id === 'transfer') }]; appState.set('reportPresets', l); } // v0.8: informe de velocidad para quien ya tenia informes guardados
   return l;
 }
 
@@ -114,100 +125,178 @@ function makeReportFromPreset(p, { scopeIds, jobIds, outDir, day } = {}) {
   return makeReport(p.type, { clipIds: useIds, jobIds: p.scope === 'all' ? null : jobIds, day, format: p.format, dark: p.dark, outDir, title: p.title, columns: p.columns, name: p.name });
 }
 
+/* ---- trabajo en segundo plano: no dormir mientras se copia, y avisar al cerrar ---- */
+let workDepth = 0, psbId = null, forceQuit = false, quitAsking = false, bgNoticeShown = false, cancelRequested = false;
+const isBusy = () => workDepth > 0 || running.size > 0;
+function workBegin() {
+  if (workDepth++ === 0 && psbId == null) { try { psbId = powerSaveBlocker.start('prevent-app-suspension'); } catch { /* */ } } // evita que el Mac se duerma o que App Nap frene la copia
+}
+function notify(body) {
+  if (process.env.CINESTACK_SELFTEST || !Notification.isSupported()) return;
+  try { new Notification({ title: 'CrisStack XS', body }).show(); } catch { /* */ }
+}
+function workEnd(doneMsg) {
+  workDepth = Math.max(0, workDepth - 1);
+  if (workDepth > 0) return;
+  if (psbId != null) { try { if (powerSaveBlocker.isStarted(psbId)) powerSaveBlocker.stop(psbId); } catch { /* */ } psbId = null; }
+  if (doneMsg && win && !win.isDestroyed() && (!win.isVisible() || win.isMinimized() || !win.isFocused())) notify(doneMsg);
+}
+const MAX_PARALLEL_JOBS = 3;
+
 /* ---- workflow de offload ---- */
 async function startWorkflow(cfg) {
-  // cfg: { sources:[{path,type:'camera'|'sound'}], destinations[], template, soundTemplate, project, camera, day, algos[], verify, mhl, ascmhl, rename, script,
+  workBegin();
+  let results = [];
+  try { results = await runWorkflow(cfg); return results; } finally {
+    const bad = results.filter((r) => r.error || (r.job && !r.job.ok)).length;
+    workEnd(bad ? `Traspaso terminado con ${bad} ${bad === 1 ? 'problema' : 'problemas'}: abre la app para verlo` : 'Traspaso terminado y verificado');
+  }
+}
+
+async function runWorkflow(cfg) {
+  // cfg: { sources:[{path,type:'camera'|'sound'|'folder',dests?:[destino]}], destinations[], template, soundTemplate, project, camera, day, algos[], verify, mhl, ascmhl, rename, script,
   //        reports:[idDeConfiguracion], transcode:{preset,height,lut,burnTimecode,burnName,text,applyLooks,s3,dir,metaFields,keepTimecode}|null }
+  // Cada origen puede ir a todos los destinos o solo a algunos (dests). El tipo «folder» copia la carpeta tal cual, sin plantilla.
   const results = [];
   const info = lib.getProject();
   if (info?.name) cfg.project = info.name; // el proyecto activo manda sobre lo que haya escrito el formulario
+  cancelRequested = false;
+  const allDests = cfg.destinations || [];
 
-  // 1) normalizar origenes: cada carpeta es un job; los ficheros sueltos se agrupan por tipo (camara / sonido)
-  const defs = []; const loose = { camera: [], sound: [] };
+  // 1) normalizar origenes: cada carpeta es un job; los ficheros sueltos se agrupan por tipo y destinos
+  const defs = []; const loose = new Map();
   for (const s of (cfg.sources || []).map((x) => (typeof x === 'string' ? { path: x, type: 'camera' } : x))) {
-    const type = s.type === 'sound' ? 'sound' : 'camera';
+    const type = s.type === 'sound' ? 'sound' : s.type === 'folder' ? 'folder' : 'camera';
+    const dests = Array.isArray(s.dests) ? s.dests.filter((d) => allDests.includes(d)) : allDests.slice();
     const st = await fsp.stat(s.path).catch(() => null);
-    if (!st) { defs.push({ type, error: `No existe: ${s.path}`, reel: path.basename(s.path) }); continue; }
-    if (st.isFile()) loose[type].push(s.path);
-    else defs.push({ type, paths: [s.path], reel: path.basename(s.path.replace(/[\\/]+$/, '')) || s.path, source: s.path });
+    if (!st) { defs.push({ type, dests: [], error: `No existe: ${s.path}`, reel: path.basename(s.path) }); continue; }
+    if (!dests.length) { defs.push({ type, dests: [], error: `«${path.basename(s.path)}» no tiene ningún destino marcado`, reel: path.basename(s.path) }); continue; }
+    if (st.isFile()) {
+      const k = `${type}|${dests.join('|')}`;
+      if (!loose.has(k)) loose.set(k, { type, dests, paths: [] });
+      loose.get(k).paths.push(s.path);
+    } else defs.push({ type, dests, paths: [s.path], reel: path.basename(s.path.replace(/[\\/]+$/, '')) || s.path, source: s.path });
   }
-  for (const type of ['camera', 'sound']) {
-    if (!loose[type].length) continue;
-    const dirs = new Set(loose[type].map((p) => path.dirname(p)));
-    defs.push({ type, paths: loose[type], reel: dirs.size === 1 ? path.basename([...dirs][0]) || 'Sueltos' : 'Sueltos', source: [...dirs][0], loose: true });
+  for (const g of loose.values()) {
+    const dirs = new Set(g.paths.map((p) => path.dirname(p)));
+    defs.push({ type: g.type, dests: g.dests, paths: g.paths, reel: dirs.size === 1 ? path.basename([...dirs][0]) || 'Sueltos' : 'Sueltos', source: [...dirs][0], loose: true });
   }
 
   const presets = reportPresets();
   const reportIds = (cfg.reports || (cfg.report ? [cfg.report.type] : [])).filter(Boolean);
   const picked = reportIds.map((id) => presets.find((p) => p.id === id)).filter(Boolean);
 
-  for (let i = 0; i < defs.length; i++) {
-    const def = defs[i]; const reel = def.reel;
+  const runDef = async (def, i) => {
+    const reel = def.reel; const dests = def.dests; const asIs = def.type === 'folder';
     const key = `${Date.now()}-${i}`;
     const steps = [{ id: 'copy', label: cfg.verify === false ? 'Copiar' : 'Copiar y verificar' }];
     if (cfg.mhl) steps.push({ id: 'mhl', label: 'Lista MHL' });
     if (cfg.ascmhl) steps.push({ id: 'ascmhl', label: 'Sello ASC MHL' });
-    steps.push({ id: 'register', label: 'Registrar en la biblioteca' });
-    if (picked.length) steps.push({ id: 'reports', label: picked.length === 1 ? 'Informe' : `${picked.length} informes` });
-    if (cfg.transcode) steps.push({ id: 'transcode', label: 'Transcodificar' });
-    send('job:start', { key, source: def.source || reel, reel, type: def.type, loose: !!def.loose, files: def.paths?.length, index: i, total: defs.length, steps });
+    if (!asIs) steps.push({ id: 'register', label: 'Registrar en la biblioteca' });
+    if (picked.length && !asIs) steps.push({ id: 'reports', label: picked.length === 1 ? 'Informe' : `${picked.length} informes` });
+    if (cfg.transcode && !asIs) steps.push({ id: 'transcode', label: 'Transcodificar' });
+    send('job:start', { key, source: def.source || reel, reel, type: def.type, loose: !!def.loose, files: def.paths?.length, index: i, total: defs.length, steps, destinations: dests });
     const step = (id, status, extra = {}) => send('job:step', { key, step: id, status, ...extra });
-    if (def.error) { send('job:done', { key, ok: false, error: def.error }); results.push({ error: def.error }); continue; }
+    if (def.error) { send('job:done', { key, ok: false, error: def.error }); results.push({ error: def.error }); return; }
 
     const template = def.type === 'sound' ? (cfg.soundTemplate || '{project}/Dia_{day}/Sonido/{reel}') : (cfg.template || '{reel}');
-    const folderName = expand(template, { project: cfg.project, day: cfg.day, camera: cfg.camera, reel, source: def.source, counter: i + 1, type: def.type });
+    const folderName = asIs ? reel : expand(template, { project: cfg.project, day: cfg.day, camera: cfg.camera, reel, source: def.source, counter: i + 1, type: def.type });
     const ac = new AbortController();
     running.set(key, ac);
     try {
       step('copy', 'run');
       const job = await runOffload({
-        sources: def.paths, destinations: cfg.destinations, folderName, algos: cfg.algos, verify: cfg.verify, signal: ac.signal,
-        rename: tools.makeRenamer(cfg.rename, { reel, camera: cfg.camera, project: cfg.project }),
+        sources: def.paths, destinations: dests, folderName, algos: cfg.algos, verify: cfg.verify, signal: ac.signal,
+        rename: asIs ? undefined : tools.makeRenamer(cfg.rename, { reel, camera: cfg.camera, project: cfg.project }),
         onProgress: (p) => send('job:progress', { key, ...p }),
       });
       step('copy', job.ok ? 'done' : 'error', { failures: job.failures });
       job.reel = reel; job.project = cfg.project; job.day = cfg.day; job.camera = cfg.camera; job.operator = info?.dit || info?.dataManager || ''; job.volume = reel; job.sourceType = def.type;
       const post = []; const folders = [];
-      for (let d = 0; d < cfg.destinations.length; d++) folders.push({ label: cfg.destinations.length > 1 ? `Destino ${d + 1}` : 'Carpeta copiada', path: path.join(cfg.destinations[d], folderName) });
-      if (cfg.mhl) { step('mhl', 'run'); for (const d of cfg.destinations) post.push(await writeMhl(job, d, `${folderName.replace(/[\\/]/g, '_')}_${job.id}`)); step('mhl', 'done'); }
-      if (cfg.ascmhl && job.ok) { step('ascmhl', 'run'); for (const d of cfg.destinations) { const r = await ascmhl.seal(path.join(d, folderName), { algos: cfg.algos }); if (r.ok) post.push(r.file); } step('ascmhl', 'done'); }
+      for (let d = 0; d < dests.length; d++) folders.push({ label: dests.length > 1 ? `Destino ${d + 1}` : 'Carpeta copiada', path: path.join(dests[d], folderName) });
+      if (cfg.mhl) { step('mhl', 'run'); for (const d of dests) post.push(await writeMhl(job, d, `${folderName.replace(/[\\/]/g, '_')}_${job.id}`)); step('mhl', 'done'); }
+      if (cfg.ascmhl && job.ok) { step('ascmhl', 'run'); for (const d of dests) { const r = await ascmhl.seal(path.join(d, folderName), { algos: cfg.algos }); if (r.ok) post.push(r.file); } step('ascmhl', 'done'); }
       else if (cfg.ascmhl) step('ascmhl', 'skip');
       if (appState.get('slack')) tools.notifySlack(appState.get('slack'), job).catch((e) => send('transcode:error', { error: 'Slack: ' + e.message }));
       if (cfg.script && job.ok) { // paso post: script del usuario con variables de entorno
         const { spawn } = require('node:child_process');
-        spawn(cfg.script, [], { shell: true, env: { ...process.env, CINESTACK_REEL: reel, CINESTACK_DEST: path.join(cfg.destinations[0], folderName), CINESTACK_OK: '1' }, stdio: 'ignore', detached: true }).unref();
+        spawn(cfg.script, [], { shell: true, env: { ...process.env, CINESTACK_REEL: reel, CINESTACK_DEST: path.join(dests[0], folderName), CINESTACK_OK: '1' }, stdio: 'ignore', detached: true }).unref();
       }
-      step('register', 'run');
-      const { clips } = await lib.registerJob(job, { project: cfg.project, reel, camera: cfg.camera, day: cfg.day }, (c) => send('library:clip', c));
+      let clips = [];
+      if (!asIs) {
+        step('register', 'run');
+        clips = (await lib.registerJob(job, { project: cfg.project, reel, camera: cfg.camera, day: cfg.day }, (c) => send('library:clip', c))).clips;
+        step('register', 'done');
+      }
       lib.addJob(job);
-      step('register', 'done');
-      if (picked.length) {
+      if (picked.length && !asIs) {
         step('reports', 'run');
-        const reportDir = path.join(cfg.destinations[0], folderName + '_report');
+        const reportDir = path.join(dests[0], folderName + '_report');
         for (const p of picked) { try { post.push(await makeReportFromPreset(p, { scopeIds: clips.map((c) => c.id), jobIds: [job.id], outDir: reportDir, day: cfg.day })); } catch (e) { send('transcode:error', { error: `Informe «${p.name}»: ${e.message}` }); } }
         folders.push({ label: 'Informes', path: reportDir });
         step('reports', 'done');
       }
-      let tcDir = null;
-      if (cfg.transcode && job.ok) {
-        tcDir = cfg.transcode.dir || path.join(app.getPath('documents'), 'Cinestack Transcodes');
+      if (cfg.transcode && !asIs && job.ok) {
+        const tcDir = cfg.transcode.dir || path.join(app.getPath('documents'), 'Cinestack Transcodes');
         folders.push({ label: 'Transcodes', path: tcDir });
         step('transcode', 'run');
         await new Promise((r) => setTimeout(r, 300)); // esperamos al ffprobe para conocer la duracion
         runTranscodes(clips.filter((c) => c.kind === 'video').map((c) => c.id), cfg.transcode).then(() => step('transcode', 'done')).catch((e) => { step('transcode', 'error'); send('transcode:error', { error: e.message }); });
-      } else if (cfg.transcode) step('transcode', 'skip');
-      send('job:done', { key, ok: job.ok, failures: job.failures, post, folders, files: job.fileCount, bytes: job.totalBytes });
+      } else if (cfg.transcode && !asIs) step('transcode', 'skip');
+      send('job:done', { key, ok: job.ok, failures: job.failures, post, folders, files: job.fileCount, bytes: job.totalBytes, jobId: job.id, seconds: job.seconds, perDest: job.perDest });
       results.push({ job: { id: job.id, ok: job.ok, failures: job.failures, fileCount: job.fileCount }, post, folders });
     } catch (e) {
       send('job:done', { key, ok: false, error: e.message });
       results.push({ error: e.message });
-      if (e.message === 'Cancelado') break;
+      if (e.message === 'Cancelado') cancelRequested = true;
     } finally { running.delete(key); }
+  };
+
+  // 2) ejecutar: los trabajos que van a destinos distintos se hacen a la vez; los que comparten un destino, uno detras de otro
+  const queue = defs.map((d, i) => ({ d, i }));
+  const busyDests = new Set(); const active = new Set();
+  while (queue.length || active.size) {
+    if (cancelRequested) queue.length = 0;
+    for (let q = 0; q < queue.length && active.size < MAX_PARALLEL_JOBS;) {
+      const { d, i } = queue[q];
+      if (d.dests.some((x) => busyDests.has(x))) { q++; continue; }
+      queue.splice(q, 1);
+      d.dests.forEach((x) => busyDests.add(x));
+      const p = runDef(d, i).catch((e) => { results.push({ error: e.message }); }).finally(() => { d.dests.forEach((x) => busyDests.delete(x)); active.delete(p); });
+      active.add(p);
+    }
+    if (active.size) await Promise.race(active);
   }
   return results;
 }
 
+/** Comparar y copiar lo nuevo entre dos carpetas (con checksum). */
+async function syncCopy(a, b, rels, { algos, replace } = {}) {
+  const list = [];
+  for (const rel of rels || []) {
+    if (!replace && fs.existsSync(path.join(b, rel))) continue; // sin permiso para reemplazar nunca se pisa nada
+    list.push(rel);
+  }
+  workBegin();
+  const ac = new AbortController(); running.set('sync-copy', ac);
+  try {
+    const job = await runOffload({ sources: [a], destinations: [b], flat: true, include: new Set(list), algos: algos?.length ? algos : ['xxh64'], verify: true, signal: ac.signal, onProgress: (p) => send('sync:progress', { kind: 'copy', ...p }) });
+    job.reel = path.basename(b.replace(/[\\/]+$/, '')) || b; job.volume = job.reel; job.sourceType = 'sync'; job.project = lib.getProject()?.name || '';
+    lib.addJob(job);
+    return { ok: job.ok, failures: job.failures, files: job.fileCount, bytes: job.totalBytes, seconds: job.seconds, id: job.id, skipped: (rels || []).length - list.length };
+  } finally { running.delete('sync-copy'); workEnd('Copia entre carpetas terminada'); }
+}
+async function syncCompare(a, b, o = {}) {
+  workBegin();
+  const ac = new AbortController(); running.set('sync-cmp', ac);
+  try { return await compareFolders(a, b, { ...o, signal: ac.signal, onProgress: (p) => send('sync:progress', { kind: 'compare', ...p }) }); } finally { running.delete('sync-cmp'); workEnd(); }
+}
+
 async function runTranscodes(ids, t) {
+  workBegin();
+  try { return await runTranscodesInner(ids, t); } finally { workEnd(); }
+}
+async function runTranscodesInner(ids, t) {
   const preset = media.PRESETS[t.preset];
   const outDir = t.dir || path.join(app.getPath('documents'), 'Cinestack Transcodes');
   const outputs = [];
@@ -298,7 +387,12 @@ function registerIpc() {
   h('volumes:list', () => listVolumes());
   h('wildcards:preview', (tpl, ctx) => expand(tpl, ctx));
   h('workflow:start', (cfg) => startWorkflow(cfg));
-  h('job:cancel', () => { for (const ac of running.values()) ac.abort(); });
+  h('job:cancel', () => { cancelRequested = true; for (const ac of running.values()) ac.abort(); });
+  h('work:busy', () => isBusy());
+  h('jobs:speed', (id) => { const j = (lib.listJobs() || []).find((x) => x.id === id); return j ? { svg: speed.chartSvg(j, { dark: true }), stats: speed.stats(j), hasSamples: !!j.samples?.length } : null; });
+  h('sync:compare', (a, b, o) => syncCompare(a, b, o));
+  h('sync:copy', (a, b, rels, o) => syncCopy(a, b, rels, o));
+  h('sync:cancel', () => { for (const k of ['sync-cmp', 'sync-copy']) running.get(k)?.abort(); });
   h('jobs:list', () => lib.listJobs());
   h('library:bins', () => lib.listBins());
   h('library:clips', (q) => lib.listClips(q));
@@ -371,7 +465,7 @@ function registerIpc2() {
   h('reports:save', (p) => {
     const list = reportPresets(); const id = p.id || ('r' + Date.now().toString(36));
     const next = { id, name: String(p.name || 'Informe').slice(0, 80), type: p.type, format: p.format === 'html' ? 'html' : 'pdf', dark: !!p.dark, title: String(p.title || '').slice(0, 120), scope: ['job', 'all', 'selection'].includes(p.scope) ? p.scope : 'all', columns: Array.isArray(p.columns) ? p.columns : [] };
-    if (!['volume', 'shooting_day', 'clips', 'thumbnails', 'contact_print'].includes(next.type)) throw new Error('Tipo de informe no válido');
+    if (!['volume', 'shooting_day', 'clips', 'thumbnails', 'contact_print', 'transfer'].includes(next.type)) throw new Error('Tipo de informe no válido');
     const i = list.findIndex((x) => x.id === id);
     if (i >= 0) list[i] = next; else list.push(next);
     appState.set('reportPresets', list); return next;
@@ -392,7 +486,7 @@ function registerIpc2() {
     if (data.kind !== 'report-presets' || !Array.isArray(data.presets)) throw new Error('Este fichero no es una configuración de informes de CrisStack XS');
     const list = reportPresets(); let n = 0;
     for (const p of data.presets) {
-      if (!['volume', 'shooting_day', 'clips', 'thumbnails', 'contact_print'].includes(p.type)) continue;
+      if (!['volume', 'shooting_day', 'clips', 'thumbnails', 'contact_print', 'transfer'].includes(p.type)) continue;
       const id = list.some((x) => x.id === p.id) ? 'r' + Date.now().toString(36) + n : (p.id || 'r' + Date.now().toString(36) + n);
       list.push({ id, name: String(p.name || 'Informe').slice(0, 80), type: p.type, format: p.format === 'html' ? 'html' : 'pdf', dark: !!p.dark, title: String(p.title || '').slice(0, 120), scope: ['job', 'all', 'selection'].includes(p.scope) ? p.scope : 'all', columns: Array.isArray(p.columns) ? p.columns : [] }); n++;
     }
@@ -685,9 +779,30 @@ app.whenReady().then(() => {
   registerIpc();
   registerIpc2();
   createWindow();
-  app.on('activate', () => BrowserWindow.getAllWindows().length === 0 && createWindow());
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); else if (win && !win.isDestroyed()) { win.show(); win.focus(); } });
 });
 app.on('window-all-closed', () => process.platform !== 'darwin' && app.quit());
+// Salir de la app con un traspaso en curso: se pregunta antes de interrumpirlo.
+app.on('before-quit', (e) => {
+  if (forceQuit || process.env.CINESTACK_SELFTEST || !isBusy()) return;
+  e.preventDefault();
+  if (quitAsking) return;
+  quitAsking = true;
+  if (win && !win.isDestroyed()) { win.show(); if (win.isMinimized()) win.restore(); }
+  dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
+    type: 'warning', buttons: ['Seguir copiando', 'Finalizar el traspaso y salir'], defaultId: 0, cancelId: 0, title: 'Traspaso en curso',
+    message: 'Hay un traspaso en curso. ¿Seguro que quieres finalizarlo?',
+    detail: 'Si sales ahora, la copia se interrumpe: los ficheros que estaban a medias se borran de los destinos y habrá que repetirla. Puedes usar «Comparar y copiar lo nuevo» para continuar solo con lo que falte.',
+  }).then(async (r) => {
+    quitAsking = false;
+    if (r.response !== 1) return;
+    forceQuit = true; cancelRequested = true;
+    for (const ac of running.values()) ac.abort();
+    const t0 = Date.now();
+    while (isBusy() && Date.now() - t0 < 8000) await new Promise((res) => setTimeout(res, 100)); // da tiempo a borrar las copias a medias
+    app.quit();
+  });
+});
 
 /* ---- Autoprueba de extremo a extremo: CINESTACK_SELFTEST=<carpeta de salida> electron . ---- */
 async function selftest(outDir) {
@@ -1055,6 +1170,48 @@ async function selftest(outDir) {
     step('v07 visor: ajustes enviados', await js(`({ cambioLaImagen: document.querySelector('.rawviewer img').src.length !== ${v1}, avisos: [...document.querySelectorAll('.rawviewer .warn')].map((w)=>w.innerText) })`));
     await js(`document.querySelector('.rawviewer').scrollIntoView({block:'start'})`); await wait(400); await shot('s2-visor-raw');
     rawReg.overrides = {}; rawReg.hellos.clear(); delete process.env.ELECTRON_RUN_AS_NODE;
+
+    // ===================== v0.8: destinos por origen, carpeta tal cual, trabajos en paralelo, comparar carpetas, velocidad =====================
+    const v8 = path.join(outDir, 'V08'); await fsp.mkdir(v8, { recursive: true });
+    const mkf = async (p, n) => { await fsp.mkdir(path.dirname(p), { recursive: true }); await fsp.writeFile(p, crypto.randomBytes(n)); };
+    const sA = path.join(v8, 'TARJETA_A'), sB = path.join(v8, 'CARPETA_B'), sC = path.join(v8, 'SONIDO_C');
+    await mkf(path.join(sA, 'A001.bin'), 6 * 1024 * 1024); await mkf(path.join(sB, 'docs', 'nota.txt'), 2000); await mkf(path.join(sC, 'S001.wav'), 3 * 1024 * 1024);
+    const D1 = path.join(v8, 'DISCO1'), D2 = path.join(v8, 'DISCO2');
+    let maxRunning = 0; const poll = setInterval(() => { maxRunning = Math.max(maxRunning, running.size); }, 15);
+    const res8 = await startWorkflow({ sources: [{ path: sA, type: 'camera', dests: [D1] }, { path: sB, type: 'folder' }, { path: sC, type: 'sound', dests: [D2] }], destinations: [D1, D2], template: '{reel}', soundTemplate: '{reel}', project: 'V8', camera: 'A', day: 1, algos: ['xxh64'], verify: true, mhl: false });
+    clearInterval(poll);
+    step('v08 destinos por origen', {
+      A_en_D1: fs.existsSync(path.join(D1, 'TARJETA_A', 'A001.bin')), A_en_D2: fs.existsSync(path.join(D2, 'TARJETA_A')),
+      tal_cual_D1: fs.existsSync(path.join(D1, 'CARPETA_B', 'docs', 'nota.txt')), tal_cual_D2: fs.existsSync(path.join(D2, 'CARPETA_B', 'docs', 'nota.txt')),
+      C_en_D2: fs.existsSync(path.join(D2, 'SONIDO_C', 'S001.wav')), C_en_D1: fs.existsSync(path.join(D1, 'SONIDO_C')),
+      trabajos_ok: res8.length === 3 && res8.every((r) => r.job?.ok), enParalelo: maxRunning, tiposEnHistorial: lib.listJobs().slice(0, 3).map((j) => j.sourceType).sort(), muestras: lib.listJobs()[0].samples?.length >= 1 });
+    await js(`state.offload.mode='offload'; state.offload.sources=[{path:${JSON.stringify(sA)},type:'camera'},{path:${JSON.stringify(sB)},type:'folder',dests:[${JSON.stringify(D1)}]}]; state.offload.destinations=[${JSON.stringify(D1)},${JSON.stringify(D2)}]; go('offload')`); await wait(1300);
+    step('v08 UI offload', await js(`({ modos: [...document.querySelectorAll('.segs .seg')].map((b)=>b.innerText), tipos: [...document.querySelectorAll('.srcitem select')].map((s)=>s.value), chips: [...document.querySelectorAll('.srcdests')].map((d)=>[...d.querySelectorAll('input')].map((i)=>i.checked)), opcionesTipo: [...document.querySelector('.srcitem select').options].map((o)=>o.text) })`));
+    await shot('t1-offload-destinos');
+    const sa = path.join(v8, 'SYNC_A'), sb = path.join(v8, 'SYNC_B');
+    await mkf(path.join(sa, 'uno.bin'), 100000); await mkf(path.join(sa, 'dir', 'dos.bin'), 200000); await mkf(path.join(sa, 'ya.bin'), 1000); await fsp.mkdir(sb, { recursive: true }); await fsp.copyFile(path.join(sa, 'ya.bin'), path.join(sb, 'ya.bin'));
+    await js(`state.offload.mode='sync'; Object.assign(syncState(), {a:${JSON.stringify(sa)}, b:${JSON.stringify(sb)}, res:null, msg:''}); render()`); await wait(1000);
+    await js(`[...document.querySelectorAll('.syncbox .btn.primary')].find((b)=>/Comparar/.test(b.innerText)).click()`); await wait(1800);
+    step('v08 comparar carpetas', await js(`({ nuevos: syncState().res?.onlyA.map((f)=>f.rel), iguales: syncState().res?.same.length, botones: [...document.querySelectorAll('.syncbox .btn.primary')].map((b)=>b.innerText) })`));
+    await shot('t2-comparar-carpetas');
+    await js(`[...document.querySelectorAll('.syncbox .btn.primary')].find((b)=>/Copiar/.test(b.innerText)).click()`); await wait(4000);
+    step('v08 copiar lo nuevo', { uno: fs.existsSync(path.join(sb, 'uno.bin')), dos: fs.existsSync(path.join(sb, 'dir', 'dos.bin')), despues: await js(`({ nuevos: syncState().res?.onlyA.length, iguales: syncState().res?.same.length, msg: syncState().msg })`) });
+    // un traspaso largo (600 MB a dos destinos) para tener una grafica de velocidad real
+    const gDir = path.join(v8, 'GRANDE'); await fsp.mkdir(gDir, { recursive: true });
+    { const fd = await fsp.open(path.join(gDir, 'G001.bin'), 'w'); const blk = crypto.randomBytes(8 * 1024 * 1024); for (let i = 0; i < 75; i++) await fd.write(blk); await fd.close(); }
+    const big8 = await startWorkflow({ sources: [{ path: gDir, type: 'folder' }], destinations: [path.join(v8, 'G_D1'), path.join(v8, 'G_D2')], algos: ['xxh64'], verify: true, mhl: false });
+    const bigJob = lib.listJobs()[0];
+    step('v08 traspaso largo', { ok: big8[0]?.job?.ok, segundos: bigJob.seconds, muestras: bigJob.samples?.length, destinos: bigJob.perDest?.map((d) => [d.copiedBytes, d.verifiedBytes]) });
+    await js(`go('jobs')`); await wait(1000);
+    step('v08 trabajos: botones', await js(`[...document.querySelectorAll('#main table button')].map((b)=>b.innerText).slice(0,4)`));
+    await js(`[...document.querySelectorAll('#main table button')].find((b)=>b.innerText==='Velocidad').click()`); await wait(1000);
+    step('v08 ventana de velocidad', await js(`({ titulo: document.querySelector('dialog b')?.innerText, filas: document.querySelectorAll('dialog tbody tr').length, svg: !!document.querySelector('dialog svg'), lineas: document.querySelectorAll('dialog svg polyline').length, mensaje: document.querySelector('dialog .speedchart')?.innerText || document.querySelector('dialog .warn')?.innerText || '' })`));
+    await shot('t3-velocidad');
+    await js(`document.querySelector('dialog .btn.primary').click()`); await wait(400);
+    const lastJob = lib.listJobs()[0];
+    const trf = await js(`api.invoke('report:make', 'transfer', { jobIds: [${JSON.stringify(lastJob.id)}], format: 'html', outDir: ${JSON.stringify(v8)} })`);
+    step('v08 informe de velocidad', { existe: fs.existsSync(trf), contiene: /Velocidad del traspaso/.test(fs.readFileSync(trf, 'utf8')), enLista: (await js(`api.invoke('reports:list')`)).some((r) => r.type === 'transfer') });
+    step('v08 sin trabajo pendiente', { ocupado: isBusy(), bloqueador: psbId });
 
     await js(`go('library')`); await wait(900);
     step('mhl exists', !!mhl && fs.existsSync(mhl));

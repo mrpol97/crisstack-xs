@@ -32,7 +32,7 @@
 
 <div class="cover">
   <h1>CrisStack XS</h1>
-  <div class="sub">Guía rápida de uso · versión 0.7</div>
+  <div class="sub">Guía rápida de uso · versión 0.8</div>
   <span class="tag">Offload verificado</span><span class="tag">Biblioteca</span><span class="tag">Color</span><span class="tag">Informes</span><span class="tag">Transcodificación</span><span class="tag">Stills por escena</span>
 </div>
 
@@ -52,7 +52,7 @@
 <h3>Qué copiar</h3>
 <ul>
   <li><b>Añadir carpeta…</b> para una tarjeta o carpeta entera y <b>Añadir ficheros sueltos…</b> para copiar solo los ficheros que elijas. Los sueltos se copian juntos en una carpeta con el nombre de la carpeta de la que vienen.</li>
-  <li>A cada origen le indicas si es de <b>Cámara</b> o de <b>Sonido</b>. Así, con las plantillas por defecto, el Día 1 queda ordenado con su carpeta de cámara y su carpeta de sonido:</li>
+  <li>A cada origen le indicas si es de <b>Cámara</b>, de <b>Sonido</b> o <b>Carpeta tal cual</b> (se copia la carpeta con su mismo nombre, sin plantilla, sin renombrar y sin registrar sus clips en la biblioteca). Con Cámara y Sonido, con las plantillas por defecto, el Día 1 queda ordenado con su carpeta de cámara y su carpeta de sonido:</li>
 </ul>
 <table>
   <tr><th>Origen</th><th>Carpeta resultante en el destino</th></tr>
@@ -67,9 +67,34 @@
   <li><b>Informes al terminar:</b> marca <b>todos los que quieras</b>; se generan uno detrás de otro con los clips de esa copia.</li>
   <li><b>Transcodificar al terminar:</b> al activarlo aparecen las opciones (ver apartado 5).</li>
 </ol>
+<h3>Varios orígenes y varios destinos</h3>
+<p>Con <b>dos o más destinos</b>, cada origen muestra una fila «Se copia a:» con una casilla por destino. Por defecto va a todos; desmarca los que no quieras. Así puedes, por ejemplo, copiar la tarjeta de cámara a los discos 1 y 2, el sonido solo al disco 2 y una carpeta de documentos solo al disco 1. Un origen sin ningún destino marcado no deja iniciar el offload.</p>
+<figure><img src="img/t1-offload-destinos.png" alt="Orígenes y destinos"><figcaption>Cada origen elige a qué destinos va; el segundo es una carpeta que se copia tal cual.</figcaption></figure>
+<ul>
+  <li><b>En paralelo:</b> lo que va a varios destinos se lee del origen una sola vez y se escribe en todos a la vez, cada destino con su propia cola (un disco lento no frena la lectura más allá de unos pocos bloques). Después, todos los destinos se <b>releen a la vez</b> y se comparan con el checksum del origen. Los trabajos que van a destinos distintos (por ejemplo, cámara → disco 1 y sonido → disco 2) también corren a la vez; los que comparten un destino van uno detrás de otro.</li>
+  <li><b>Si un destino falla</b> (disco lleno, desconectado), los demás siguen y ese destino queda marcado con error; no se deja una copia incompleta en él.</li>
+</ul>
+<h3>Segundo plano y cerrar la app</h3>
+<ul>
+  <li>Mientras hay un traspaso, la app <b>impide que el equipo se duerma</b> y no se frena aunque esté tapada o en otra ventana.</li>
+  <li><b>Cerrar la ventana no detiene la copia</b>: sigue en segundo plano y recibes una notificación al terminar. Se vuelve a abrir desde el Dock (en Windows, desde la barra de tareas).</li>
+  <li><b>Salir de la app</b> (Cmd+Q) con una copia en curso pregunta «¿Seguro que quieres finalizar el traspaso?». Si finalizas, se interrumpe y se borran los ficheros que estaban a medias.</li>
+</ul>
+<h3>Comparar y copiar lo nuevo</h3>
+<p>En la parte superior de Offload, el selector <b>Comparar y copiar lo nuevo</b> compara dos carpetas (A = origen, B = destino) y te dice cuántos ficheros son nuevos en A, distintos, solo de B o iguales. Puedes marcar cuáles copiar y se copian con verificación por checksum; después vuelve a comparar para confirmar que no queda nada. Es la forma de <b>reanudar un traspaso interrumpido</b> o de poner al día un segundo disco.</p>
+<figure><img src="img/t2-comparar-carpetas.png" alt="Comparar carpetas"><figcaption>Dos carpetas comparadas: 2 ficheros nuevos y 1 igual.</figcaption></figure>
+<ul>
+  <li>Por defecto compara nombre, tamaño y fecha (rápido). Activa <b>Comparar por checksum</b> para detectar ficheros con el mismo tamaño pero distinto contenido.</li>
+  <li>Los ficheros que existen en las dos carpetas pero son distintos <b>no se tocan</b>, salvo que actives «Reemplazar también los distintos»; en ese caso pide confirmación antes de sobrescribir.</li>
+  <li><b>⇄ Intercambiar</b> cambia el sentido (de B a A).</li>
+</ul>
 <h3>Mientras copia</h3>
-<p>Cada tarjeta tiene su propia ficha con los pasos (copiar y verificar → lista MHL → registrar en la biblioteca → informes → transcodificar) y, mientras trabaja, te dice <b>qué fichero está tratando</b>, <b>en qué paso</b> («Copiando a 2 destinos», «Verificando destino 1 de 2»), cuántos MB lleva, la velocidad y <b>cuánto tiempo falta</b> aproximadamente. Lo que está copiándose sale arriba y el resumen también aparece en la barra inferior.</p>
+<p>Cada tarjeta tiene su propia ficha con los pasos (copiar y verificar → lista MHL → registrar en la biblioteca → informes → transcodificar) y, mientras trabaja, te dice <b>qué fichero está tratando</b>, <b>en qué paso</b> («Copiando a 2 destinos a la vez», «Verificando 2 destinos a la vez»), la velocidad de <b>cada destino</b>, cuántos MB lleva, la velocidad y <b>cuánto tiempo falta</b> aproximadamente. Lo que está copiándose sale arriba y el resumen también aparece en la barra inferior.</p>
 <figure><img src="img/p5-progreso-en-vivo.png" alt="Progreso en vivo"><figcaption>Copia en curso: fichero actual, paso, velocidad y tiempo restante.</figcaption></figure>
+<h3>Velocidad del traspaso</h3>
+<p>Cada traspaso guarda cómo evolucionó la velocidad. En <b>Trabajos → Velocidad</b> (o en el botón «Ver velocidad del traspaso» de la ficha) ves la media, la máxima y la mínima, una gráfica en el tiempo con una línea por destino y una tabla con lo escrito, lo releído, la velocidad media y la máxima y los errores de cada destino. Desde ahí, <b>Guardar informe PDF de velocidad</b>; también está como informe «Velocidad del traspaso» en Informes y se puede marcar para generarlo al terminar cada copia.</p>
+<figure><img src="img/t3-velocidad.png" alt="Velocidad del traspaso"><figcaption>Copia de 600 MB a dos destinos: gráfica, estadísticas y tabla por destino.</figcaption></figure>
+<div class="note"><b>Ojo:</b> la verificación relee lo recién escrito y el sistema puede servirlo desde su caché, por lo que la velocidad de relectura puede salir más alta que la real del disco.</div>
 <h3>Al terminar</h3>
 <p>La ficha indica el tiempo total y el tamaño, y deja botones de <b>acceso rápido</b> para abrir en el Finder cada carpeta donde se han guardado las cosas: la copia en cada destino, los informes y los transcodes.</p>
 <figure><img src="img/p1-offload-progreso.png" alt="Offload terminado"><figcaption>Tarjetas terminadas, con los pasos cumplidos y botones para abrir las carpetas.</figcaption></figure>

@@ -1,11 +1,14 @@
-// Motor de offload: lee cada fichero de origen UNA vez, calcula el hash de origen y escribe
-// en todos los destinos a la vez; despues relee cada destino y compara (verificacion real).
+// Motor de offload: lee cada fichero de origen UNA vez, calcula el hash de origen y escribe en todos los destinos
+// A LA VEZ, cada uno con su propio escritor y su propia cola (un disco lento no bloquea a la lectura mas alla de unos
+// pocos bloques); despues relee todos los destinos en paralelo y compara (verificacion real).
+// Un fallo en un destino (disco lleno, desconectado...) no detiene a los demas: ese destino queda marcado como ERROR.
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { createHasher } = require('./hasher');
 
 const CHUNK = 4 * 1024 * 1024;
+const DEPTH = 4; // bloques en vuelo por destino (4 x 4 MB)
 const DEFAULT_IGNORE = [/^\.DS_Store$/, /^Thumbs\.db$/i, /^\.Spotlight-V100$/, /^\.Trashes$/, /^\.fseventsd$/];
 
 async function walk(root, ignore = DEFAULT_IGNORE) {
@@ -43,102 +46,154 @@ async function hashFile(file, algos, onBytes, signal) {
   return hasher.digest();
 }
 
-async function copyOne(file, destPaths, algos, onBytes, signal) {
+/**
+ * Copia un fichero a varios destinos. Devuelve { hashes, errors:[Error|null por destino] }.
+ * Si se cancela, borra las copias a medias y lanza 'Cancelado'. Si un destino falla, los demas siguen.
+ * hooks: { onRead(n), onDest(d, n) }
+ */
+async function copyOne(file, destPaths, algos, hooks = {}, signal) {
   const hasher = await createHasher(algos);
-  const src = await fsp.open(file.abs, 'r');
-  const outs = [];
-  for (const d of destPaths) {
-    await fsp.mkdir(path.dirname(d), { recursive: true });
-    outs.push(await fsp.open(d, 'w'));
-  }
-  const buf = Buffer.allocUnsafe(CHUNK);
+  const outs = destPaths.map((p) => ({ p, fd: null, err: null, chain: Promise.resolve(), inflight: [] }));
+  let src = null;
   try {
+    src = await fsp.open(file.abs, 'r');
+    for (const o of outs) {
+      try { await fsp.mkdir(path.dirname(o.p), { recursive: true }); o.fd = await fsp.open(o.p, 'w'); } catch (e) { o.err = e; }
+    }
     for (;;) {
       if (signal?.aborted) throw new Error('Cancelado');
+      if (outs.every((o) => o.err)) break; // ningun destino util: no seguimos leyendo
+      const buf = Buffer.allocUnsafe(CHUNK);
       const { bytesRead } = await src.read(buf, 0, CHUNK, null);
       if (!bytesRead) break;
-      const slice = buf.subarray(0, bytesRead);
-      hasher.update(slice);
-      await Promise.all(outs.map((o) => o.write(slice, 0, bytesRead)));
-      onBytes?.(bytesRead);
+      hasher.update(buf.subarray(0, bytesRead));
+      hooks.onRead?.(bytesRead);
+      outs.forEach((o, d) => {
+        if (o.err) return;
+        const pr = (o.chain = o.chain.then(async () => {
+          if (o.err) return;
+          try { await o.fd.write(buf, 0, bytesRead); hooks.onDest?.(d, bytesRead); } catch (e) { o.err = e; }
+        }));
+        o.inflight.push(pr);
+      });
+      for (const o of outs) while (o.inflight.length >= DEPTH) await o.inflight.shift(); // contrapresion por destino
     }
-    await Promise.all(outs.map((o) => o.sync()));
-  } finally {
-    await src.close();
-    await Promise.all(outs.map((o) => o.close()));
+    await Promise.all(outs.map((o) => o.chain));
+    await Promise.all(outs.map(async (o) => { if (o.fd && !o.err) { try { await o.fd.sync(); } catch (e) { o.err = e; } } }));
+  } catch (e) {
+    await Promise.all(outs.map((o) => o.chain.catch(() => {})));
+    await Promise.all(outs.map(async (o) => { try { await o.fd?.close(); } catch { /* */ } o.fd = null; await fsp.rm(o.p, { force: true }).catch(() => {}); }));
+    await src?.close().catch(() => {});
+    throw e;
   }
-  // conserva fecha de modificacion original
+  await src.close();
+  await Promise.all(outs.map(async (o) => { try { await o.fd?.close(); } catch (e) { o.err = o.err || e; } }));
   const t = new Date(file.mtime);
-  await Promise.all(destPaths.map((d) => fsp.utimes(d, t, t)));
-  return hasher.digest();
+  await Promise.all(outs.map(async (o) => {
+    if (o.err) { await fsp.rm(o.p, { force: true }).catch(() => {}); return; } // no dejamos copias incompletas
+    await fsp.utimes(o.p, t, t).catch(() => {});
+  }));
+  return { hashes: hasher.digest(), errors: outs.map((o) => o.err || null) };
 }
 
 /**
- * opts: { sources:[dir], destinations:[dir], folderName?, algos?, verify?, onProgress?, signal? }
- * Devuelve el resumen del job con una entrada por fichero y por destino.
+ * opts: { sources:[dir|fichero], destinations:[dir], folderName?, flat?, include?:Set<rel>, algos?, verify?, onProgress?, signal?, rename? }
+ *   flat: copia a destino/<ruta relativa> sin carpeta intermedia (sincronizar carpetas)
+ *   include: solo estos ficheros (rutas relativas al origen)
+ * Devuelve el resumen del job con una entrada por fichero y por destino, mas las muestras de velocidad.
  */
 async function runOffload(opts) {
   const algos = opts.algos?.length ? opts.algos : ['xxh64'];
   const verify = opts.verify !== false;
+  const nd = opts.destinations.length;
   const started = new Date();
+  const t0 = Date.now();
   const jobFiles = [];
   for (const src of opts.sources) {
     const st = await fsp.stat(src);
     if (st.isFile()) { // fichero suelto: se copia a la carpeta del job con su nombre
-      jobFiles.push({ abs: src, rel: path.basename(src), size: st.size, mtime: st.mtimeMs, srcRoot: path.dirname(src), name: opts.folderName || path.basename(path.dirname(src)) });
+      jobFiles.push({ abs: src, rel: path.basename(src), size: st.size, mtime: st.mtimeMs, srcRoot: path.dirname(src), name: opts.flat ? '' : (opts.folderName || path.basename(path.dirname(src))) });
       continue;
     }
-    const name = opts.folderName || path.basename(src);
-    for (const f of await walk(src)) jobFiles.push({ ...f, srcRoot: src, name });
+    const name = opts.flat ? '' : (opts.folderName || path.basename(src));
+    for (const f of await walk(src)) if (!opts.include || opts.include.has(f.rel.split(path.sep).join('/'))) jobFiles.push({ ...f, srcRoot: src, name });
   }
   const totalBytes = jobFiles.reduce((s, f) => s + f.size, 0);
-  const totalWork = totalBytes * (verify ? 1 + opts.destinations.length : 1);
+  const totalWork = totalBytes * (verify ? 1 + nd : 1);
   let done = 0;
+  const ds = opts.destinations.map((p) => ({ path: p, copied: 0, verified: 0, errors: 0 }));
   const cur = {}; // fase actual: se conserva entre eventos para que la interfaz siempre sepa que fichero y que paso
-  const emit = (extra = {}) => {
+  let lastEmit = 0;
+  let speeds = ds.map(() => 0);
+  const emit = (extra = {}, force = false) => {
     Object.assign(cur, extra);
-    opts.onProgress?.({ doneBytes: done, totalBytes: totalWork, files: jobFiles.length, destCount: opts.destinations.length, verify, ...cur });
+    const now = Date.now();
+    if (!force && now - lastEmit < 100) return; // la interfaz no necesita mas de 10 avisos por segundo
+    lastEmit = now;
+    opts.onProgress?.({ doneBytes: done, totalBytes: totalWork, files: jobFiles.length, destCount: nd, verify, perDest: ds.map((d, i) => ({ path: d.path, copied: d.copied, verified: d.verified, errors: d.errors, speed: speeds[i] })), ...cur });
   };
-  const bump = (n) => { done += n; emit(); };
+
+  // muestras de velocidad: una por segundo (la serie se aclara si el traspaso dura horas)
+  const samples = []; // [segundos, bytesTotales, fase(0 copia, 1 verificacion), ...bytesPorDestino]
+  let lastSample = { t: t0, per: ds.map(() => 0) };
+  const sample = (last) => {
+    const now = Date.now(); const dt = (now - lastSample.t) / 1000;
+    const per = ds.map((d) => d.copied + d.verified);
+    if (last === true && dt < 0.5 && samples.length) samples.pop(); // un ultimo intervalo muy corto se funde con el anterior: evita picos falsos
+    else if (dt > 0) speeds = per.map((p, i) => (p - lastSample.per[i]) / dt);
+    lastSample = { t: now, per };
+    samples.push([Math.round((now - t0) / 100) / 10, done, cur.phase === 'verify' ? 1 : 0, ...per]);
+    if (samples.length > 7200) for (let i = samples.length - 1; i > 0; i -= 2) samples.splice(i, 1);
+  };
+  const timer = setInterval(sample, 1000);
 
   const results = [];
   let failures = 0;
-  for (let fi = 0; fi < jobFiles.length; fi++) {
-    const f = jobFiles[fi];
-    const outRel = opts.rename ? opts.rename(f.rel) : f.rel;
-    const destPaths = opts.destinations.map((d) => path.join(d, f.name, outRel));
-    emit({ phase: 'copy', current: f.rel, fileIndex: fi + 1, fileSize: f.size, dest: null });
-    const entry = { rel: path.join(f.name, outRel), srcRel: f.rel, size: f.size, mtime: f.mtime, hashes: null, dests: [] };
-    try {
-      entry.hashes = await copyOne(f, destPaths, algos, bump, opts.signal);
-    } catch (e) {
-      if (e.message === 'Cancelado') throw e;
-      entry.error = e.message;
-      failures++;
-      results.push(entry);
-      continue;
-    }
-    for (let di = 0; di < destPaths.length; di++) {
-      const dp = destPaths[di];
-      const d = { path: dp, status: 'copied' };
-      if (verify) {
-        emit({ phase: 'verify', current: f.rel, dest: di + 1 });
+  try {
+    for (let fi = 0; fi < jobFiles.length; fi++) {
+      const f = jobFiles[fi];
+      const outRel = opts.rename ? opts.rename(f.rel) : f.rel;
+      const destPaths = opts.destinations.map((d) => path.join(d, f.name, outRel));
+      emit({ phase: 'copy', current: f.rel, fileIndex: fi + 1, fileSize: f.size, dest: null }, true);
+      const entry = { rel: path.join(f.name, outRel), srcRel: f.rel, size: f.size, mtime: f.mtime, hashes: null, dests: [] };
+      let cp;
+      try {
+        cp = await copyOne(f, destPaths, algos, { onRead: (n) => { done += n; emit(); }, onDest: (d, n) => { ds[d].copied += n; } }, opts.signal);
+      } catch (e) {
+        if (e.message === 'Cancelado') throw e;
+        entry.error = e.message;
+        failures++;
+        results.push(entry);
+        continue;
+      }
+      entry.hashes = cp.hashes;
+      if (verify) emit({ phase: 'verify', current: f.rel, dest: null }, true);
+      // todos los destinos se releen a la vez
+      entry.dests = await Promise.all(destPaths.map(async (dp, di) => {
+        const d = { path: dp, status: 'copied' };
+        if (cp.errors[di]) { d.status = 'ERROR'; d.error = cp.errors[di].message; ds[di].errors++; failures++; return d; }
+        if (!verify) return d;
         try {
-          const h = await hashFile(dp, algos, bump, opts.signal);
-          const bad = algos.filter((a) => h[a] !== entry.hashes[a]);
+          const h = await hashFile(dp, algos, (n) => { done += n; ds[di].verified += n; emit(); }, opts.signal);
+          const bad = algos.filter((a) => h[a] !== cp.hashes[a]);
           d.status = bad.length ? 'MISMATCH' : 'verified';
-          if (bad.length) { d.mismatch = bad; failures++; }
+          if (bad.length) { d.mismatch = bad; ds[di].errors++; failures++; }
         } catch (e) {
           if (e.message === 'Cancelado') throw e;
-          d.status = 'ERROR'; d.error = e.message; failures++;
+          d.status = 'ERROR'; d.error = e.message; ds[di].errors++; failures++;
         }
-      }
-      entry.dests.push(d);
+        return d;
+      }));
+      results.push(entry);
     }
-    results.push(entry);
+  } finally {
+    clearInterval(timer);
   }
+  sample(true);
   const finished = new Date();
-  emit({ phase: 'done' });
+  done = totalWork;
+  emit({ phase: 'done' }, true);
+  const seconds = Math.max(0.001, (finished - started) / 1000);
   return {
     id: `${started.toISOString().replace(/[:.]/g, '-')}`,
     started: started.toISOString(),
@@ -152,6 +207,9 @@ async function runOffload(opts) {
     failures,
     ok: failures === 0,
     files: results,
+    seconds,
+    perDest: ds.map((d) => ({ path: d.path, copiedBytes: d.copied, verifiedBytes: d.verified, errors: d.errors })),
+    samples,
   };
 }
 
@@ -178,4 +236,4 @@ async function verifyFolder(root, entries, algos, onProgress, signal) {
   return out;
 }
 
-module.exports = { walk, hashFile, runOffload, verifyFolder };
+module.exports = { walk, hashFile, copyOne, runOffload, verifyFolder };

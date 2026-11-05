@@ -117,14 +117,23 @@ async function viewOffload2() {
   const [vols, presets, wfs, P, reps, fields] = await Promise.all([api.invoke('volumes:list'), api.invoke('presets:list'), api.invoke('workflows:list'), api.invoke('project:get'), api.invoke('reports:list'), api.invoke('library:fields:list')]);
   const pinfo = P.info; if (pinfo?.name) o.project = pinfo.name;
   o.reports = o.reports.filter((id) => reps.some((r) => r.id === id));
+  o.mode = o.mode || 'offload';
+  const modeBar = h('div', { class: 'segs', style: 'margin-bottom:12px;align-self:flex-start' },
+    ...[['offload', 'Offload', 'Copiar tarjetas y carpetas a uno o varios destinos'], ['sync', 'Comparar y copiar lo nuevo', 'Comparar dos carpetas y copiar solo lo que falta']].map(([id, label, title]) => h('button', { class: 'btn seg' + (o.mode === id ? ' on' : ''), title, 'aria-pressed': String(o.mode === id), onclick: () => { o.mode = id; render(); } }, label)));
+  if (o.mode === 'sync') { main.append(modeBar, h('p', { class: 'mut', style: 'margin-top:0' }, 'Compara dos carpetas, te dice qué hay de nuevo y copia solo eso, con checksum y verificación. Sirve para reanudar un traspaso interrumpido o para poner al día un segundo disco.'), syncPanel()); return; }
 
   const isFile = (s) => s.isFile;
-  const srcList = h('div', { class: 'list' }, ...(o.sources.length ? o.sources.map((s, i) => h('div', { class: 'item srcitem' },
+  const destOf = (s) => (Array.isArray(s.dests) ? s.dests.filter((d) => o.destinations.includes(d)) : o.destinations);
+  const setDest = (s, d, on) => { const cur = new Set(destOf(s)); on ? cur.add(d) : cur.delete(d); s.dests = cur.size === o.destinations.length ? undefined : o.destinations.filter((x) => cur.has(x)); render(); };
+  const srcList = h('div', { class: 'list' }, ...(o.sources.length ? o.sources.map((s, i) => h('div', { class: 'item srcitem', style: 'flex-wrap:wrap' },
     h('span', { class: 'ficon', 'aria-hidden': 'true' }, isFile(s) ? '▫' : '▤'), h('span', { title: s.path, class: 'grow' }, s.path),
-    h('select', { 'aria-label': 'Tipo de origen', onchange: (e) => { s.type = e.target.value; render(); } }, h('option', { value: 'camera', selected: s.type !== 'sound' }, 'Cámara'), h('option', { value: 'sound', selected: s.type === 'sound' }, 'Sonido')),
-    h('button', { class: 'x', 'aria-label': 'Quitar', onclick: () => { o.sources.splice(i, 1); render(); } }, '×'))) : [h('div', { class: 'mut' }, 'Añade una tarjeta, una carpeta o ficheros sueltos. Indica si es de cámara o de sonido.')]));
+    h('select', { 'aria-label': 'Tipo de origen', onchange: (e) => { s.type = e.target.value; render(); } }, ...[['camera', 'Cámara'], ['sound', 'Sonido'], ['folder', 'Carpeta tal cual']].map(([v, l]) => h('option', { value: v, selected: (s.type || 'camera') === v }, l))),
+    h('button', { class: 'x', 'aria-label': 'Quitar', onclick: () => { o.sources.splice(i, 1); render(); } }, '×'),
+    o.destinations.length > 1 ? h('div', { class: 'chips srcdests', style: 'flex-basis:100%' }, h('span', { class: 'mut' }, 'Se copia a:'),
+      ...o.destinations.map((d, di) => h('label', { class: 'chip', title: d }, h('input', { type: 'checkbox', checked: destOf(s).includes(d), onchange: (e) => setDest(s, d, e.target.checked) }), `Destino ${di + 1}`)),
+      !destOf(s).length ? h('span', { class: 'bad' }, 'Marca al menos un destino') : '') : '')) : [h('div', { class: 'mut' }, 'Añade una tarjeta, una carpeta o ficheros sueltos. Indica si es de cámara, de sonido o «carpeta tal cual» (se copia la carpeta con su nombre, sin plantilla ni biblioteca).')]));
   const addSources = (paths, isF) => { for (const p of paths) if (!o.sources.some((s) => s.path === p)) o.sources.push({ path: p, type: 'camera', isFile: isF }); render(); };
-  const dstList = h('div', { class: 'list' }, ...(o.destinations.length ? o.destinations.map((p, i) => h('div', { class: 'item' }, h('span', { title: p }, p), h('button', { class: 'x', 'aria-label': 'Quitar', onclick: () => { o.destinations.splice(i, 1); render(); } }, '×'))) : [h('div', { class: 'mut' }, 'Añade al menos un destino. Con varios destinos se hace backup redundante.')]));
+  const dstList = h('div', { class: 'list' }, ...(o.destinations.length ? o.destinations.map((p, i) => h('div', { class: 'item' }, h('span', { class: 'mut' }, o.destinations.length > 1 ? `Destino ${i + 1}` : ''), h('span', { title: p, class: 'grow' }, p), h('button', { class: 'x', 'aria-label': 'Quitar', onclick: () => { const gone = o.destinations[i]; o.destinations.splice(i, 1); for (const s of o.sources) if (Array.isArray(s.dests)) s.dests = s.dests.filter((d) => d !== gone); render(); } }, '×'))) : [h('div', { class: 'mut' }, 'Añade al menos un destino. Con varios destinos se escribe en todos a la vez, cada uno a su velocidad, y se verifican a la vez. Puedes decidir qué origen va a qué destino.')]));
   const algo = (id, label) => h('label', { class: 'chip' }, h('input', { type: 'checkbox', checked: o.algos.includes(id), onchange: (e) => { o.algos = e.target.checked ? [...new Set([...o.algos, id])] : o.algos.filter((x) => x !== id); if (!o.algos.length) { o.algos = ['xxh64']; render(); } } }), label);
   const ctx = { project: o.project, day: o.day, camera: o.camera, source: o.sources.find((s) => s.type !== 'sound')?.path || 'A001' };
   const prevCam = h('div', { class: 'mono mut' }), prevSnd = h('div', { class: 'mono mut' });
@@ -134,9 +143,10 @@ async function viewOffload2() {
   };
   const tin = (label, key, flex = '2') => h('label', { class: 'f', style: `flex:${flex};min-width:260px` }, label, h('input', { type: 'text', value: o[key], oninput: (e) => { o[key] = e.target.value; upd(); } }));
   const repChips = reps.map((r) => h('label', { class: 'chip', title: `${r.type} · ${r.format.toUpperCase()}` }, h('input', { type: 'checkbox', checked: o.reports.includes(r.id), onchange: (e) => { o.reports = e.target.checked ? [...new Set([...o.reports, r.id])] : o.reports.filter((x) => x !== r.id); } }), r.name));
-  const ready = o.sources.length && o.destinations.length && !o.running;
+  const noDest = o.sources.some((s) => !destOf(s).length);
+  const ready = o.sources.length && o.destinations.length && !noDest && !o.running;
 
-  main.append(h('p', { class: 'mut', style: 'margin-top:0' }, 'Copia con checksum a varios destinos a la vez y verifica releyendo cada copia.'),
+  main.append(modeBar, h('p', { class: 'mut', style: 'margin-top:0' }, 'Copia con checksum a varios destinos a la vez y verifica releyendo cada copia. Si cierras la ventana, la copia sigue en segundo plano.'),
     h('div', { class: 'grid2' },
       h('div', { class: 'card' }, h('h2', { style: 'margin-top:0' }, 'Origen'), srcList,
         h('div', { class: 'row' }, h('button', { class: 'btn', onclick: async () => addSources(await api.invoke('dialog:folder', true), false) }, 'Añadir carpeta…'),
@@ -176,14 +186,14 @@ async function viewOffload2() {
     h('div', { class: 'row', style: 'margin-top:16px' },
       h('button', { class: 'btn primary', disabled: !ready, onclick: startOffload }, o.running ? 'En curso…' : 'Iniciar offload'),
       h('button', { class: 'btn danger', disabled: !o.running, onclick: () => api.invoke('job:cancel') }, 'Cancelar'),
-      !o.sources.length || !o.destinations.length ? h('span', { class: 'mut' }, 'Falta ' + [!o.sources.length && 'un origen', !o.destinations.length && 'un destino'].filter(Boolean).join(' y ') + '.') : ''),
+      !o.sources.length || !o.destinations.length ? h('span', { class: 'mut' }, 'Falta ' + [!o.sources.length && 'un origen', !o.destinations.length && 'un destino'].filter(Boolean).join(' y ') + '.') : noDest ? h('span', { class: 'bad' }, 'Hay un origen sin destino marcado.') : ''),
     h('div', { id: 'progress', style: 'margin-top:16px' }));
   upd(); renderProgress();
 }
 
 async function startOffload() {
   const o = state.offload; o.running = true; state.jobs = state.progress = {}; render();
-  const cfg = { sources: o.sources.map((s) => ({ path: s.path, type: s.type })), destinations: o.destinations, template: o.template, soundTemplate: o.soundTemplate, project: o.project, camera: o.camera, day: o.day,
+  const cfg = { sources: o.sources.map((s) => ({ path: s.path, type: s.type, dests: Array.isArray(s.dests) ? s.dests : undefined })), destinations: o.destinations, template: o.template, soundTemplate: o.soundTemplate, project: o.project, camera: o.camera, day: o.day,
     algos: o.algos, verify: o.verify, mhl: o.mhl, ascmhl: o.ascmhl, rename: o.rename || undefined, script: o.script || undefined, reports: o.reports, transcode: o.tcOn ? tcCfg(o.tc) : null };
   try { await api.invoke('workflow:start', cfg); } catch (e) { toast('Error: ' + errText(e)); }
   o.running = false; if (state.view === 'offload') { const keep = state.progress; await render(); state.jobs = state.progress = keep; renderProgress(); }
@@ -195,25 +205,25 @@ const scheduleRender = () => { if (renderTimer) return; renderTimer = setTimeout
 const STEP_ICON = { done: '✓', run: '●', error: '✖', skip: '–', pending: '○' };
 
 api.on('job:start', (e) => {
-  state.jobs = state.progress; state.progress[e.key] = { key: e.key, reel: e.reel, type: e.type, loose: e.loose, nfiles: e.files, index: e.index, total: e.total, pct: 0, label: `${e.reel}: preparando`, done: false,
+  state.jobs = state.progress; state.progress[e.key] = { key: e.key, dests: e.destinations || [], reel: e.reel, type: e.type, loose: e.loose, nfiles: e.files, index: e.index, total: e.total, pct: 0, label: `${e.reel}: preparando`, done: false,
     steps: (e.steps || []).map((s) => ({ ...s, status: 'pending' })), t0: Date.now(), lastT: Date.now(), lastBytes: 0, speed: 0 };
   runningCount++; updateBadge(); scheduleRender();
 });
 api.on('job:step', (e) => { const j = state.progress[e.key]; const s = j?.steps.find((x) => x.id === e.step); if (s) s.status = e.status; scheduleRender(); });
 api.on('job:progress', (e) => {
   const j = state.progress[e.key]; if (!j) return;
-  Object.assign(j, { phase: e.phase, current: e.current, fileIndex: e.fileIndex, files: e.files, dest: e.dest, destCount: e.destCount, doneBytes: e.doneBytes, totalBytes: e.totalBytes, verify: e.verify });
+  Object.assign(j, { perDest: e.perDest, phase: e.phase, current: e.current, fileIndex: e.fileIndex, files: e.files, dest: e.dest, destCount: e.destCount, doneBytes: e.doneBytes, totalBytes: e.totalBytes, verify: e.verify });
   j.pct = e.totalBytes ? (e.doneBytes / e.totalBytes) * 100 : 100;
   const now = Date.now(); const dt = (now - j.lastT) / 1000;
   if (dt >= 0.5) { const inst = (e.doneBytes - j.lastBytes) / dt; j.speed = j.speed ? j.speed * 0.7 + inst * 0.3 : inst; j.lastT = now; j.lastBytes = e.doneBytes; } // velocidad suavizada
   j.eta = j.speed > 0 ? (e.totalBytes - e.doneBytes) / j.speed : NaN;
-  const what = e.phase === 'verify' ? (e.destCount > 1 ? `Verificando destino ${e.dest} de ${e.destCount}` : 'Verificando la copia') : 'Copiando';
+  const what = e.phase === 'verify' ? (e.destCount > 1 ? `Verificando ${e.destCount} destinos` : 'Verificando la copia') : 'Copiando';
   j.label = `${j.reel}: ${what} (${Math.round(j.pct)} %)`;
   drawJobsBar(); scheduleRender();
 });
 api.on('job:done', (e) => {
   const j = state.progress[e.key] || (state.progress[e.key] = { key: e.key, steps: [] });
-  Object.assign(j, { pct: 100, done: true, ok: e.ok, folders: e.folders || [], post: e.post || [], failures: e.failures, error: e.error, elapsed: (Date.now() - (j.t0 || Date.now())) / 1000, files: e.files ?? j.files, bytes: e.bytes });
+  Object.assign(j, { pct: 100, done: true, ok: e.ok, folders: e.folders || [], post: e.post || [], failures: e.failures, error: e.error, elapsed: (Date.now() - (j.t0 || Date.now())) / 1000, files: e.files ?? j.files, bytes: e.bytes, jobId: e.jobId, seconds: e.seconds, perDestFinal: e.perDest });
   j.label = e.ok ? 'Copiado y verificado' : (e.error || `${e.failures} fallos de verificación`);
   runningCount = Math.max(0, runningCount - 1); updateBadge();
   toast(e.ok ? `Offload de ${j.reel || 'la tarjeta'} completado y verificado` : `Offload con problemas: ${j.label}`);
@@ -230,14 +240,17 @@ function jobCard(j) {
   const bar = h('div', { class: 'bar', style: 'margin:8px 0' }, h('i', { style: `transform:scaleX(${(j.pct || 0) / 100})` }));
   let detail;
   if (!j.done) {
-    const what = j.phase === 'verify' ? (j.destCount > 1 ? `Verificando destino ${j.dest} de ${j.destCount}` : 'Verificando la copia') : j.phase === 'copy' ? (j.destCount > 1 ? `Copiando a ${j.destCount} destinos a la vez` : 'Copiando') : 'Preparando';
+    const what = j.phase === 'verify' ? (j.destCount > 1 ? `Verificando ${j.destCount} destinos a la vez` : 'Verificando la copia') : j.phase === 'copy' ? (j.destCount > 1 ? `Copiando a ${j.destCount} destinos a la vez` : 'Copiando') : 'Preparando';
     detail = h('div', { class: 'jdetail' },
       h('div', {}, h('b', {}, what), j.current ? h('span', { class: 'mono', title: j.current }, ' · ' + j.current) : ''),
       h('div', { class: 'mut' }, [j.files ? `Fichero ${j.fileIndex || 1} de ${j.files}` : '', j.totalBytes ? `${fmtBytes(j.doneBytes || 0)} de ${fmtBytes(j.totalBytes)}${j.verify ? ' (copia + verificación)' : ''}` : '',
-        j.speed ? `${fmtBytes(j.speed)}/s` : '', `transcurrido ${fmtClock((Date.now() - j.t0) / 1000)}`, pending.length && j.speed ? `faltan ≈ ${fmtEta(j.eta)}` : 'calculando el tiempo restante…'].filter(Boolean).join(' · ')));
+        j.speed ? `${fmtBytes(j.speed)}/s en total` : '', `transcurrido ${fmtClock((Date.now() - j.t0) / 1000)}`, pending.length && j.speed ? `faltan ≈ ${fmtEta(j.eta)}` : 'calculando el tiempo restante…'].filter(Boolean).join(' · ')),
+      j.perDest?.length > 1 ? h('div', { class: 'destspeeds' }, ...j.perDest.map((d, i) => h('span', { class: 'chip', title: d.path }, `Destino ${i + 1}: ${fmtBytes(d.speed || 0)}/s · escrito ${fmtBytes(d.copied)}${d.verified ? ` · verificado ${fmtBytes(d.verified)}` : ''}${d.errors ? ` · ${d.errors} errores` : ''}`))) : '');
   } else {
     detail = h('div', { class: 'jdetail' },
+      j.perDestFinal?.some((d) => d.errors) ? h('div', { class: 'bad' }, j.perDestFinal.map((d, i) => d.errors ? `Destino ${i + 1} (${d.path}): ${d.errors} ${d.errors === 1 ? 'fichero con error' : 'ficheros con error'}` : '').filter(Boolean).join(' · ')) : '',
       h('div', { class: j.ok ? 'ok' : 'bad' }, j.ok ? `Todo copiado y verificado en ${fmtClock(j.elapsed)}${j.files ? ` · ${j.files} ${j.files === 1 ? 'fichero' : 'ficheros'}` : ''}${j.bytes ? ` · ${fmtBytes(j.bytes)}` : ''}` : (j.error || `${j.failures} ficheros no coinciden con el original`)),
+      j.jobId ? h('div', { class: 'row', style: 'margin:6px 0' }, h('button', { class: 'btn', onclick: () => showSpeed(j.jobId, j.reel) }, 'Ver velocidad del traspaso')) : '',
       j.folders?.length ? h('div', { class: 'folderlinks' }, h('span', { class: 'mut' }, `Abrir en ${FILE_MANAGER}:`), ...j.folders.map((f) => h('button', { class: 'btn', title: f.path, onclick: () => api.invoke('shell:open', f.path).then((r) => r && toast('No se pudo abrir: ' + r)) }, f.label))) : '');
   }
   return h('div', { class: 'card jobcard', style: 'margin-bottom:10px' }, head, stepsEl, bar, detail);
@@ -325,7 +338,7 @@ async function viewTranscode2() {
 }
 
 /* ---------- INFORMES: varias configuraciones guardadas ---------- */
-const REPORT_TYPES = [['volume', 'Volumen / checksums'], ['shooting_day', 'Día de rodaje'], ['clips', 'Lista de clips'], ['thumbnails', 'Miniaturas'], ['contact_print', 'Contact print']];
+const REPORT_TYPES = [['volume', 'Volumen / checksums'], ['shooting_day', 'Día de rodaje'], ['transfer', 'Velocidad del traspaso'], ['clips', 'Lista de clips'], ['thumbnails', 'Miniaturas'], ['contact_print', 'Contact print']];
 const REPORT_COLS = [['name', 'Clip'], ['reel', 'Reel'], ['camera', 'Cámara'], ['scene', 'Escena'], ['shot', 'Plano'], ['take', 'Toma'], ['shotId', 'ShotID'], ['format', 'Formato'], ['codec', 'Códec'], ['fps', 'FPS'], ['tcStart', 'TC inicio'], ['duration', 'Duración'], ['size', 'Tamaño'],
   ['rating', 'Valoración'], ['flag', 'Marca'], ['status', 'Estado'], ['iso', 'ISO'], ['wb', 'WB'], ['lens', 'Lente'], ['shutter', 'Shutter'], ['volume', 'Volumen'], ['backups', 'Backups'], ['notes', 'Notas']];
 

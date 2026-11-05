@@ -80,6 +80,7 @@ function build(type, { clips = [], jobs = [], project = 'Proyecto', day = '', da
     }
     return wrap(T('Informe de volumen'), sub, body, dark);
   }
+  if (type === 'transfer') return wrap(T('Velocidad del traspaso'), sub, jobSummary(jobs) + require('./speed').reportBody(jobs, { dark }), dark);
   if (type === 'thumbnails' || type === 'contact_print') {
     const per = type === 'contact_print' ? '' : '';
     const cards = clips.filter((c) => c.kind === 'video').map((c) => `<div class="card"><img src="${thumbSrc(c)}" alt=""><div><b>${esc(c.name)}</b><br>${esc(c.meta?.timecode || '')} ${fmtDur(c.meta?.duration)}${type === 'thumbnails' ? `<br>${esc(c.scene)} ${esc(c.shot)} ${esc(c.take)} ${c.flag ? '· ' + esc(c.flag) : ''}` : ''}</div></div>`).join('');

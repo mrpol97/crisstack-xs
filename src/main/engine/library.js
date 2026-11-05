@@ -304,6 +304,7 @@ class Library {
 
   addJob(job) {
     const slim = { ...job, files: job.files.map((f) => ({ rel: f.rel, size: f.size, mtime: f.mtime, hashes: f.hashes, dests: f.dests, error: f.error })) };
+    if (slim.samples?.length > 600) { const step = slim.samples.length / 600; slim.samples = Array.from({ length: 600 }, (_, i) => slim.samples[Math.min(slim.samples.length - 1, Math.round(i * step))]); slim.samples[599] = job.samples[job.samples.length - 1]; } // las muestras son acumulados: se pueden aclarar sin perder la forma
     this.store.data.jobs.unshift(slim);
     this.store.data.jobs = this.store.data.jobs.slice(0, 500);
     this.store.save();
